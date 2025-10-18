@@ -1,4 +1,4 @@
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 1
 
 
    1              		.syntax unified
@@ -58,7 +58,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
   44 000c 01DD     		ble	.L2
   45              		.loc 1 11 0 is_stmt 0 discriminator 1
   46 000e 6423     		movs	r3, #100
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 2
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 2
 
 
   47 0010 07E0     		b	.L3
@@ -118,7 +118,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
   95              		.loc 1 17 0
   96 0008 7B68     		ldr	r3, [r7, #4]
   97 000a 13F1640F 		cmn	r3, #100
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 3
 
 
   98 000e 02DA     		bge	.L6
@@ -178,7 +178,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  148              	.LFB65:
   22:motor_s.c     **** 
   23:motor_s.c     **** void motor_enable(uint8 m1_disable, uint8 m2_disable){
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 4
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 4
 
 
  149              		.loc 1 23 0
@@ -238,7 +238,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  198 003e 80BD     		pop	{r7, pc}
  199              		.cfi_endproc
  200              	.LFE65:
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 5
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 5
 
 
  201              		.size	motor_enable, .-motor_enable
@@ -298,7 +298,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  249 002c 1F85EB51 		.word	1374389535
  250              		.cfi_endproc
  251              	.LFE66:
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 6
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 6
 
 
  252              		.size	apply_right_trim, .-apply_right_trim
@@ -358,7 +358,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  300              		@ sp needed
  301 003a 80BD     		pop	{r7, pc}
  302              		.cfi_endproc
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 7
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 7
 
 
  303              	.LFE67:
@@ -418,7 +418,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
   50:motor_s.c     ****     if (duty_center > 0) {
  348              		.loc 1 50 0
  349 0036 7B68     		ldr	r3, [r7, #4]
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 8
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 8
 
 
  350 0038 002B     		cmp	r3, #0
@@ -478,7 +478,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  397              		.cfi_def_cfa_register 13
  398              		@ sp needed
  399 0086 80BD     		pop	{r7, pc}
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 9
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 9
 
 
  400              		.cfi_endproc
@@ -538,7 +538,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
   63:motor_s.c     ****     if (d > BRAKE_DUTY_MAX) d = BRAKE_DUTY_MAX;
  449              		.loc 1 63 0
  450 0030 1249     		ldr	r1, .L30+8
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 10
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 10
 
 
  451 0032 F868     		ldr	r0, [r7, #12]	@ float
@@ -598,7 +598,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  502              		.section	.debug_info,"",%progbits
  503              	.Ldebug_info0:
  504 0000 4A020000 		.4byte	0x24a
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 11
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 11
 
 
  505 0004 0400     		.2byte	0x4
@@ -658,7 +658,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  559 0071 07       		.byte	0x7
  560 0072 6D010000 		.4byte	.LASF8
  561 0076 03       		.uleb128 0x3
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 12
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 12
 
 
  562 0077 F7000000 		.4byte	.LASF10
@@ -718,7 +718,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  616 00ea 02       		.uleb128 0x2
  617 00eb 91       		.byte	0x91
  618 00ec 74       		.sleb128 -12
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 13
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 13
 
 
  619 00ed 00       		.byte	0
@@ -778,7 +778,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  673 0152 06       		.uleb128 0x6
  674 0153 91010000 		.4byte	.LASF23
  675 0157 01       		.byte	0x1
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 14
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 14
 
 
  676 0158 1E       		.byte	0x1e
@@ -838,7 +838,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  730 01c7 2A       		.byte	0x2a
  731 01c8 68000000 		.4byte	0x68
  732 01cc 02       		.uleb128 0x2
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 15
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 15
 
 
  733 01cd 91       		.byte	0x91
@@ -898,7 +898,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  787 0230 6400     		.ascii	"d\000"
  788 0232 01       		.byte	0x1
  789 0233 3E       		.byte	0x3e
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 16
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 16
 
 
  790 0234 A5000000 		.4byte	0xa5
@@ -958,7 +958,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  844 0027 49       		.uleb128 0x49
  845 0028 13       		.uleb128 0x13
  846 0029 00       		.byte	0
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 17
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 17
 
 
  847 002a 00       		.byte	0
@@ -1018,7 +1018,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  901 0061 00       		.byte	0
  902 0062 03       		.uleb128 0x3
  903 0063 08       		.uleb128 0x8
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 18
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 18
 
 
  904 0064 3A       		.uleb128 0x3a
@@ -1078,7 +1078,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  958 009b 08       		.uleb128 0x8
  959 009c 3A       		.uleb128 0x3a
  960 009d 0B       		.uleb128 0xb
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 19
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 19
 
 
  961 009e 3B       		.uleb128 0x3b
@@ -1138,7 +1138,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  1015 00d5 0E       		.uleb128 0xe
  1016 00d6 3A       		.uleb128 0x3a
  1017 00d7 0B       		.uleb128 0xb
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 20
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 20
 
 
  1018 00d8 3B       		.uleb128 0x3b
@@ -1198,7 +1198,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  1072 0028 00000000 		.4byte	.LFB68
  1073 002c 88000000 		.4byte	.LFE68
  1074 0030 00000000 		.4byte	.LFB69
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 21
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 21
 
 
  1075 0034 80000000 		.4byte	.LFE69
@@ -1258,7 +1258,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  1096      6E7400
  1097              	.LASF36:
  1098 00e2 6D6F746F 		.ascii	"motor_s.c\000"
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 22
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 22
 
 
  1098      725F732E 
@@ -1318,7 +1318,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  1126      676E6564 
  1126      20696E74 
  1126      00
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 23
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 23
 
 
  1127              	.LASF7:
@@ -1378,7 +1378,7 @@ ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 1
  1151              	.LASF11:
  1152 021d 75696E74 		.ascii	"uint8\000"
  1152      3800
-ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccS3b0KH.s 			page 24
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccCKYVpJ.s 			page 24
 
 
  1153              	.LASF4:
