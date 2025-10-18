@@ -1,0 +1,6 @@
+C:\Users\ylee818\Documents\GitHub\COMPSYS301\Benchmarktest___combined\Benchmarktest___combined\psoc student pack\psoc_code_base\CS301_Class.cydsn\CS301_Class.cyprj|38332e4d-15ea-44b4-abf2-9a0376c1dbe3
+C:\Program Files (x86)\Cypress\PSoC Creator\4.2\PSoC Creator\psoc\content\default\CyAnnotationLibrary\CyAnnotationLibrary.cylib\CyAnnotationLibrary.cyprj|27cca57d-6103-4322-91de-f2ae7bb7824b
+C:\Users\ylee818\Documents\PSoC Creator\4.2\Downloads ( 4.2).cylib\Downloads ( 4.2).cyprj|a474be6c-8479-4345-92f4-daba7d1b78e2
+C:\Program Files (x86)\Cypress\PSoC Creator\4.2\PSoC Creator\psoc\content\cycomponentlibraryupdates\CyComponentLibraryUpdates.cylib\CyComponentLibraryUpdates.cyprj|d1be8cc0-d94c-49d3-afd8-979db3049b63
+C:\Program Files (x86)\Cypress\PSoC Creator\4.2\PSoC Creator\psoc\content\cycomponentlibrary\CyComponentLibrary.cylib\CyComponentLibrary.cyprj|e0d948f6-de1d-47c0-bd16-3a993b35ef4b
+C:\Program Files (x86)\Cypress\PSoC Creator\4.2\PSoC Creator\psoc\content\cyprimitives\CyPrimitives.cylib\CyPrimitives.cyprj|3446dd46-bfc3-43bf-b463-5273513a1e2c
