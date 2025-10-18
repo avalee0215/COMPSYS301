@@ -1,0 +1,692 @@
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 1
+
+
+   1              		.syntax unified
+   2              		.cpu cortex-m3
+   3              		.fpu softvfp
+   4              		.eabi_attribute 20, 1
+   5              		.eabi_attribute 21, 1
+   6              		.eabi_attribute 23, 3
+   7              		.eabi_attribute 24, 1
+   8              		.eabi_attribute 25, 1
+   9              		.eabi_attribute 26, 1
+  10              		.eabi_attribute 30, 6
+  11              		.eabi_attribute 34, 1
+  12              		.eabi_attribute 18, 4
+  13              		.thumb
+  14              		.syntax unified
+  15              		.file	"sensors.c"
+  16              		.text
+  17              	.Ltext0:
+  18              		.cfi_sections	.debug_frame
+  19              		.section	.text.Sensor_ComputePeakToPeak,"ax",%progbits
+  20              		.align	2
+  21              		.global	Sensor_ComputePeakToPeak
+  22              		.thumb
+  23              		.thumb_func
+  24              		.type	Sensor_ComputePeakToPeak, %function
+  25              	Sensor_ComputePeakToPeak:
+  26              	.LFB64:
+  27              		.file 1 "sensors.c"
+   1:sensors.c     **** #include <project.h> 
+   2:sensors.c     **** #include <sensors.h>
+   3:sensors.c     **** #include <stdint.h> 
+   4:sensors.c     **** #include <stdlib.h>
+   5:sensors.c     **** #include <stdio.h>
+   6:sensors.c     **** 
+   7:sensors.c     **** // Computes the peak-peak value (max - min) of N_SAMPLES from ADC 
+   8:sensors.c     **** // for the selected channel (eg channel 0 = A0) 
+   9:sensors.c     **** uint16_t Sensor_ComputePeakToPeak(uint8_t channel) {
+  28              		.loc 1 9 0
+  29              		.cfi_startproc
+  30              		@ args = 0, pretend = 0, frame = 24
+  31              		@ frame_needed = 1, uses_anonymous_args = 0
+  32 0000 80B5     		push	{r7, lr}
+  33              		.cfi_def_cfa_offset 8
+  34              		.cfi_offset 7, -8
+  35              		.cfi_offset 14, -4
+  36 0002 86B0     		sub	sp, sp, #24
+  37              		.cfi_def_cfa_offset 32
+  38 0004 00AF     		add	r7, sp, #0
+  39              		.cfi_def_cfa_register 7
+  40 0006 0346     		mov	r3, r0
+  41 0008 FB71     		strb	r3, [r7, #7]
+  10:sensors.c     ****     
+  11:sensors.c     **** uint16_t min_val = 4095; // start with max possible 
+  42              		.loc 1 11 0
+  43 000a 40F6FF73 		movw	r3, #4095
+  44 000e FB82     		strh	r3, [r7, #22]	@ movhi
+  12:sensors.c     **** uint16_t max_val = 0; // start with min possible 
+  45              		.loc 1 12 0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 2
+
+
+  46 0010 0023     		movs	r3, #0
+  47 0012 BB82     		strh	r3, [r7, #20]	@ movhi
+  13:sensors.c     ****     
+  14:sensors.c     ****   ADC_StartConvert();
+  48              		.loc 1 14 0
+  49 0014 FFF7FEFF 		bl	ADC_StartConvert
+  50              	.LBB2:
+  15:sensors.c     **** 
+  16:sensors.c     ****   // collect N_SAMPLES from ADC 
+  17:sensors.c     ****   for (int i = 0; i < N_SAMPLES; i++){
+  51              		.loc 1 17 0
+  52 0018 0023     		movs	r3, #0
+  53 001a 3B61     		str	r3, [r7, #16]
+  54 001c 15E0     		b	.L2
+  55              	.L5:
+  56              	.LBB3:
+  18:sensors.c     ****     // Read the result from the given ADC channel (0-7 for A0-A7) 
+  19:sensors.c     ****     uint16_t sample = ADC_GetResult16(channel); 
+  57              		.loc 1 19 0
+  58 001e FB79     		ldrb	r3, [r7, #7]	@ zero_extendqisi2
+  59 0020 9BB2     		uxth	r3, r3
+  60 0022 1846     		mov	r0, r3
+  61 0024 FFF7FEFF 		bl	ADC_GetResult16
+  62 0028 0346     		mov	r3, r0
+  63 002a FB81     		strh	r3, [r7, #14]	@ movhi
+  20:sensors.c     ****     // wait until ADC conversion for current channel is done 
+  21:sensors.c     **** 
+  22:sensors.c     ****     // Update max and min trackers
+  23:sensors.c     ****     if(sample < min_val) {
+  64              		.loc 1 23 0
+  65 002c FA89     		ldrh	r2, [r7, #14]
+  66 002e FB8A     		ldrh	r3, [r7, #22]
+  67 0030 9A42     		cmp	r2, r3
+  68 0032 01D2     		bcs	.L3
+  24:sensors.c     ****         min_val = sample;
+  69              		.loc 1 24 0
+  70 0034 FB89     		ldrh	r3, [r7, #14]	@ movhi
+  71 0036 FB82     		strh	r3, [r7, #22]	@ movhi
+  72              	.L3:
+  25:sensors.c     ****     }
+  26:sensors.c     ****     if(sample > max_val) {
+  73              		.loc 1 26 0
+  74 0038 FA89     		ldrh	r2, [r7, #14]
+  75 003a BB8A     		ldrh	r3, [r7, #20]
+  76 003c 9A42     		cmp	r2, r3
+  77 003e 01D9     		bls	.L4
+  27:sensors.c     ****         max_val = sample; 
+  78              		.loc 1 27 0
+  79 0040 FB89     		ldrh	r3, [r7, #14]	@ movhi
+  80 0042 BB82     		strh	r3, [r7, #20]	@ movhi
+  81              	.L4:
+  82              	.LBE3:
+  17:sensors.c     ****     // Read the result from the given ADC channel (0-7 for A0-A7) 
+  83              		.loc 1 17 0 discriminator 2
+  84 0044 3B69     		ldr	r3, [r7, #16]
+  85 0046 0133     		adds	r3, r3, #1
+  86 0048 3B61     		str	r3, [r7, #16]
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 3
+
+
+  87              	.L2:
+  17:sensors.c     ****     // Read the result from the given ADC channel (0-7 for A0-A7) 
+  88              		.loc 1 17 0 is_stmt 0 discriminator 1
+  89 004a 3B69     		ldr	r3, [r7, #16]
+  90 004c 40F2A362 		movw	r2, #1699
+  91 0050 9342     		cmp	r3, r2
+  92 0052 E4DD     		ble	.L5
+  93              	.LBE2:
+  28:sensors.c     ****     }
+  29:sensors.c     **** } 
+  30:sensors.c     ****   ADC_StopConvert();
+  94              		.loc 1 30 0 is_stmt 1
+  95 0054 FFF7FEFF 		bl	ADC_StopConvert
+  31:sensors.c     **** 
+  32:sensors.c     ****   // return peak to peak voltage in ADC counts 
+  33:sensors.c     ****  return (max_val - min_val);
+  96              		.loc 1 33 0
+  97 0058 BA8A     		ldrh	r2, [r7, #20]	@ movhi
+  98 005a FB8A     		ldrh	r3, [r7, #22]	@ movhi
+  99 005c D31A     		subs	r3, r2, r3
+ 100 005e 9BB2     		uxth	r3, r3
+  34:sensors.c     **** 
+  35:sensors.c     **** }...
+ 101              		.loc 1 35 0
+ 102 0060 1846     		mov	r0, r3
+ 103 0062 1837     		adds	r7, r7, #24
+ 104              		.cfi_def_cfa_offset 8
+ 105 0064 BD46     		mov	sp, r7
+ 106              		.cfi_def_cfa_register 13
+ 107              		@ sp needed
+ 108 0066 80BD     		pop	{r7, pc}
+ 109              		.cfi_endproc
+ 110              	.LFE64:
+ 111              		.size	Sensor_ComputePeakToPeak, .-Sensor_ComputePeakToPeak
+ 112              		.text
+ 113              	.Letext0:
+ 114              		.file 2 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 115              		.file 3 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 116              		.file 4 "Generated_Source\\PSoC5/core_cm3.h"
+ 117              		.section	.debug_info,"",%progbits
+ 118              	.Ldebug_info0:
+ 119 0000 50010000 		.4byte	0x150
+ 120 0004 0400     		.2byte	0x4
+ 121 0006 00000000 		.4byte	.Ldebug_abbrev0
+ 122 000a 04       		.byte	0x4
+ 123 000b 01       		.uleb128 0x1
+ 124 000c 19000000 		.4byte	.LASF23
+ 125 0010 0C       		.byte	0xc
+ 126 0011 22010000 		.4byte	.LASF24
+ 127 0015 C0010000 		.4byte	.LASF25
+ 128 0019 00000000 		.4byte	.Ldebug_ranges0+0
+ 129 001d 00000000 		.4byte	0
+ 130 0021 00000000 		.4byte	.Ldebug_line0
+ 131 0025 02       		.uleb128 0x2
+ 132 0026 01       		.byte	0x1
+ 133 0027 06       		.byte	0x6
+ 134 0028 B4010000 		.4byte	.LASF0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 4
+
+
+ 135 002c 03       		.uleb128 0x3
+ 136 002d 07000000 		.4byte	.LASF3
+ 137 0031 02       		.byte	0x2
+ 138 0032 1D       		.byte	0x1d
+ 139 0033 37000000 		.4byte	0x37
+ 140 0037 02       		.uleb128 0x2
+ 141 0038 01       		.byte	0x1
+ 142 0039 08       		.byte	0x8
+ 143 003a D0000000 		.4byte	.LASF1
+ 144 003e 02       		.uleb128 0x2
+ 145 003f 02       		.byte	0x2
+ 146 0040 05       		.byte	0x5
+ 147 0041 7C010000 		.4byte	.LASF2
+ 148 0045 03       		.uleb128 0x3
+ 149 0046 10010000 		.4byte	.LASF4
+ 150 004a 02       		.byte	0x2
+ 151 004b 2B       		.byte	0x2b
+ 152 004c 50000000 		.4byte	0x50
+ 153 0050 02       		.uleb128 0x2
+ 154 0051 02       		.byte	0x2
+ 155 0052 07       		.byte	0x7
+ 156 0053 F0000000 		.4byte	.LASF5
+ 157 0057 03       		.uleb128 0x3
+ 158 0058 A7000000 		.4byte	.LASF6
+ 159 005c 02       		.byte	0x2
+ 160 005d 3F       		.byte	0x3f
+ 161 005e 62000000 		.4byte	0x62
+ 162 0062 02       		.uleb128 0x2
+ 163 0063 04       		.byte	0x4
+ 164 0064 05       		.byte	0x5
+ 165 0065 9F010000 		.4byte	.LASF7
+ 166 0069 02       		.uleb128 0x2
+ 167 006a 04       		.byte	0x4
+ 168 006b 07       		.byte	0x7
+ 169 006c DE000000 		.4byte	.LASF8
+ 170 0070 02       		.uleb128 0x2
+ 171 0071 08       		.byte	0x8
+ 172 0072 05       		.byte	0x5
+ 173 0073 69010000 		.4byte	.LASF9
+ 174 0077 02       		.uleb128 0x2
+ 175 0078 08       		.byte	0x8
+ 176 0079 07       		.byte	0x7
+ 177 007a 39010000 		.4byte	.LASF10
+ 178 007e 04       		.uleb128 0x4
+ 179 007f 04       		.byte	0x4
+ 180 0080 05       		.byte	0x5
+ 181 0081 696E7400 		.ascii	"int\000"
+ 182 0085 02       		.uleb128 0x2
+ 183 0086 04       		.byte	0x4
+ 184 0087 07       		.byte	0x7
+ 185 0088 2C010000 		.4byte	.LASF11
+ 186 008c 03       		.uleb128 0x3
+ 187 008d 50010000 		.4byte	.LASF12
+ 188 0091 03       		.byte	0x3
+ 189 0092 18       		.byte	0x18
+ 190 0093 2C000000 		.4byte	0x2c
+ 191 0097 03       		.uleb128 0x3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 5
+
+
+ 192 0098 86010000 		.4byte	.LASF13
+ 193 009c 03       		.byte	0x3
+ 194 009d 24       		.byte	0x24
+ 195 009e 45000000 		.4byte	0x45
+ 196 00a2 03       		.uleb128 0x3
+ 197 00a3 58010000 		.4byte	.LASF14
+ 198 00a7 03       		.byte	0x3
+ 199 00a8 2C       		.byte	0x2c
+ 200 00a9 57000000 		.4byte	0x57
+ 201 00ad 02       		.uleb128 0x2
+ 202 00ae 04       		.byte	0x4
+ 203 00af 04       		.byte	0x4
+ 204 00b0 B1000000 		.4byte	.LASF15
+ 205 00b4 02       		.uleb128 0x2
+ 206 00b5 08       		.byte	0x8
+ 207 00b6 04       		.byte	0x4
+ 208 00b7 1B010000 		.4byte	.LASF16
+ 209 00bb 02       		.uleb128 0x2
+ 210 00bc 01       		.byte	0x1
+ 211 00bd 08       		.byte	0x8
+ 212 00be 77010000 		.4byte	.LASF17
+ 213 00c2 02       		.uleb128 0x2
+ 214 00c3 08       		.byte	0x8
+ 215 00c4 04       		.byte	0x4
+ 216 00c5 A8010000 		.4byte	.LASF18
+ 217 00c9 02       		.uleb128 0x2
+ 218 00ca 04       		.byte	0x4
+ 219 00cb 07       		.byte	0x7
+ 220 00cc 60010000 		.4byte	.LASF19
+ 221 00d0 05       		.uleb128 0x5
+ 222 00d1 B7000000 		.4byte	.LASF26
+ 223 00d5 01       		.byte	0x1
+ 224 00d6 09       		.byte	0x9
+ 225 00d7 97000000 		.4byte	0x97
+ 226 00db 00000000 		.4byte	.LFB64
+ 227 00df 68000000 		.4byte	.LFE64-.LFB64
+ 228 00e3 01       		.uleb128 0x1
+ 229 00e4 9C       		.byte	0x9c
+ 230 00e5 42010000 		.4byte	0x142
+ 231 00e9 06       		.uleb128 0x6
+ 232 00ea 11000000 		.4byte	.LASF27
+ 233 00ee 01       		.byte	0x1
+ 234 00ef 09       		.byte	0x9
+ 235 00f0 8C000000 		.4byte	0x8c
+ 236 00f4 02       		.uleb128 0x2
+ 237 00f5 91       		.byte	0x91
+ 238 00f6 67       		.sleb128 -25
+ 239 00f7 07       		.uleb128 0x7
+ 240 00f8 97010000 		.4byte	.LASF20
+ 241 00fc 01       		.byte	0x1
+ 242 00fd 0B       		.byte	0xb
+ 243 00fe 97000000 		.4byte	0x97
+ 244 0102 02       		.uleb128 0x2
+ 245 0103 91       		.byte	0x91
+ 246 0104 76       		.sleb128 -10
+ 247 0105 07       		.uleb128 0x7
+ 248 0106 8F010000 		.4byte	.LASF21
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 6
+
+
+ 249 010a 01       		.byte	0x1
+ 250 010b 0C       		.byte	0xc
+ 251 010c 97000000 		.4byte	0x97
+ 252 0110 02       		.uleb128 0x2
+ 253 0111 91       		.byte	0x91
+ 254 0112 74       		.sleb128 -12
+ 255 0113 08       		.uleb128 0x8
+ 256 0114 18000000 		.4byte	.LBB2
+ 257 0118 3C000000 		.4byte	.LBE2-.LBB2
+ 258 011c 09       		.uleb128 0x9
+ 259 011d 6900     		.ascii	"i\000"
+ 260 011f 01       		.byte	0x1
+ 261 0120 11       		.byte	0x11
+ 262 0121 7E000000 		.4byte	0x7e
+ 263 0125 02       		.uleb128 0x2
+ 264 0126 91       		.byte	0x91
+ 265 0127 70       		.sleb128 -16
+ 266 0128 08       		.uleb128 0x8
+ 267 0129 1E000000 		.4byte	.LBB3
+ 268 012d 26000000 		.4byte	.LBE3-.LBB3
+ 269 0131 07       		.uleb128 0x7
+ 270 0132 00000000 		.4byte	.LASF22
+ 271 0136 01       		.byte	0x1
+ 272 0137 13       		.byte	0x13
+ 273 0138 97000000 		.4byte	0x97
+ 274 013c 02       		.uleb128 0x2
+ 275 013d 91       		.byte	0x91
+ 276 013e 6E       		.sleb128 -18
+ 277 013f 00       		.byte	0
+ 278 0140 00       		.byte	0
+ 279 0141 00       		.byte	0
+ 280 0142 0A       		.uleb128 0xa
+ 281 0143 03010000 		.4byte	.LASF28
+ 282 0147 04       		.byte	0x4
+ 283 0148 1207     		.2byte	0x712
+ 284 014a 4E010000 		.4byte	0x14e
+ 285 014e 0B       		.uleb128 0xb
+ 286 014f A2000000 		.4byte	0xa2
+ 287 0153 00       		.byte	0
+ 288              		.section	.debug_abbrev,"",%progbits
+ 289              	.Ldebug_abbrev0:
+ 290 0000 01       		.uleb128 0x1
+ 291 0001 11       		.uleb128 0x11
+ 292 0002 01       		.byte	0x1
+ 293 0003 25       		.uleb128 0x25
+ 294 0004 0E       		.uleb128 0xe
+ 295 0005 13       		.uleb128 0x13
+ 296 0006 0B       		.uleb128 0xb
+ 297 0007 03       		.uleb128 0x3
+ 298 0008 0E       		.uleb128 0xe
+ 299 0009 1B       		.uleb128 0x1b
+ 300 000a 0E       		.uleb128 0xe
+ 301 000b 55       		.uleb128 0x55
+ 302 000c 17       		.uleb128 0x17
+ 303 000d 11       		.uleb128 0x11
+ 304 000e 01       		.uleb128 0x1
+ 305 000f 10       		.uleb128 0x10
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 7
+
+
+ 306 0010 17       		.uleb128 0x17
+ 307 0011 00       		.byte	0
+ 308 0012 00       		.byte	0
+ 309 0013 02       		.uleb128 0x2
+ 310 0014 24       		.uleb128 0x24
+ 311 0015 00       		.byte	0
+ 312 0016 0B       		.uleb128 0xb
+ 313 0017 0B       		.uleb128 0xb
+ 314 0018 3E       		.uleb128 0x3e
+ 315 0019 0B       		.uleb128 0xb
+ 316 001a 03       		.uleb128 0x3
+ 317 001b 0E       		.uleb128 0xe
+ 318 001c 00       		.byte	0
+ 319 001d 00       		.byte	0
+ 320 001e 03       		.uleb128 0x3
+ 321 001f 16       		.uleb128 0x16
+ 322 0020 00       		.byte	0
+ 323 0021 03       		.uleb128 0x3
+ 324 0022 0E       		.uleb128 0xe
+ 325 0023 3A       		.uleb128 0x3a
+ 326 0024 0B       		.uleb128 0xb
+ 327 0025 3B       		.uleb128 0x3b
+ 328 0026 0B       		.uleb128 0xb
+ 329 0027 49       		.uleb128 0x49
+ 330 0028 13       		.uleb128 0x13
+ 331 0029 00       		.byte	0
+ 332 002a 00       		.byte	0
+ 333 002b 04       		.uleb128 0x4
+ 334 002c 24       		.uleb128 0x24
+ 335 002d 00       		.byte	0
+ 336 002e 0B       		.uleb128 0xb
+ 337 002f 0B       		.uleb128 0xb
+ 338 0030 3E       		.uleb128 0x3e
+ 339 0031 0B       		.uleb128 0xb
+ 340 0032 03       		.uleb128 0x3
+ 341 0033 08       		.uleb128 0x8
+ 342 0034 00       		.byte	0
+ 343 0035 00       		.byte	0
+ 344 0036 05       		.uleb128 0x5
+ 345 0037 2E       		.uleb128 0x2e
+ 346 0038 01       		.byte	0x1
+ 347 0039 3F       		.uleb128 0x3f
+ 348 003a 19       		.uleb128 0x19
+ 349 003b 03       		.uleb128 0x3
+ 350 003c 0E       		.uleb128 0xe
+ 351 003d 3A       		.uleb128 0x3a
+ 352 003e 0B       		.uleb128 0xb
+ 353 003f 3B       		.uleb128 0x3b
+ 354 0040 0B       		.uleb128 0xb
+ 355 0041 27       		.uleb128 0x27
+ 356 0042 19       		.uleb128 0x19
+ 357 0043 49       		.uleb128 0x49
+ 358 0044 13       		.uleb128 0x13
+ 359 0045 11       		.uleb128 0x11
+ 360 0046 01       		.uleb128 0x1
+ 361 0047 12       		.uleb128 0x12
+ 362 0048 06       		.uleb128 0x6
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 8
+
+
+ 363 0049 40       		.uleb128 0x40
+ 364 004a 18       		.uleb128 0x18
+ 365 004b 9642     		.uleb128 0x2116
+ 366 004d 19       		.uleb128 0x19
+ 367 004e 01       		.uleb128 0x1
+ 368 004f 13       		.uleb128 0x13
+ 369 0050 00       		.byte	0
+ 370 0051 00       		.byte	0
+ 371 0052 06       		.uleb128 0x6
+ 372 0053 05       		.uleb128 0x5
+ 373 0054 00       		.byte	0
+ 374 0055 03       		.uleb128 0x3
+ 375 0056 0E       		.uleb128 0xe
+ 376 0057 3A       		.uleb128 0x3a
+ 377 0058 0B       		.uleb128 0xb
+ 378 0059 3B       		.uleb128 0x3b
+ 379 005a 0B       		.uleb128 0xb
+ 380 005b 49       		.uleb128 0x49
+ 381 005c 13       		.uleb128 0x13
+ 382 005d 02       		.uleb128 0x2
+ 383 005e 18       		.uleb128 0x18
+ 384 005f 00       		.byte	0
+ 385 0060 00       		.byte	0
+ 386 0061 07       		.uleb128 0x7
+ 387 0062 34       		.uleb128 0x34
+ 388 0063 00       		.byte	0
+ 389 0064 03       		.uleb128 0x3
+ 390 0065 0E       		.uleb128 0xe
+ 391 0066 3A       		.uleb128 0x3a
+ 392 0067 0B       		.uleb128 0xb
+ 393 0068 3B       		.uleb128 0x3b
+ 394 0069 0B       		.uleb128 0xb
+ 395 006a 49       		.uleb128 0x49
+ 396 006b 13       		.uleb128 0x13
+ 397 006c 02       		.uleb128 0x2
+ 398 006d 18       		.uleb128 0x18
+ 399 006e 00       		.byte	0
+ 400 006f 00       		.byte	0
+ 401 0070 08       		.uleb128 0x8
+ 402 0071 0B       		.uleb128 0xb
+ 403 0072 01       		.byte	0x1
+ 404 0073 11       		.uleb128 0x11
+ 405 0074 01       		.uleb128 0x1
+ 406 0075 12       		.uleb128 0x12
+ 407 0076 06       		.uleb128 0x6
+ 408 0077 00       		.byte	0
+ 409 0078 00       		.byte	0
+ 410 0079 09       		.uleb128 0x9
+ 411 007a 34       		.uleb128 0x34
+ 412 007b 00       		.byte	0
+ 413 007c 03       		.uleb128 0x3
+ 414 007d 08       		.uleb128 0x8
+ 415 007e 3A       		.uleb128 0x3a
+ 416 007f 0B       		.uleb128 0xb
+ 417 0080 3B       		.uleb128 0x3b
+ 418 0081 0B       		.uleb128 0xb
+ 419 0082 49       		.uleb128 0x49
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 9
+
+
+ 420 0083 13       		.uleb128 0x13
+ 421 0084 02       		.uleb128 0x2
+ 422 0085 18       		.uleb128 0x18
+ 423 0086 00       		.byte	0
+ 424 0087 00       		.byte	0
+ 425 0088 0A       		.uleb128 0xa
+ 426 0089 34       		.uleb128 0x34
+ 427 008a 00       		.byte	0
+ 428 008b 03       		.uleb128 0x3
+ 429 008c 0E       		.uleb128 0xe
+ 430 008d 3A       		.uleb128 0x3a
+ 431 008e 0B       		.uleb128 0xb
+ 432 008f 3B       		.uleb128 0x3b
+ 433 0090 05       		.uleb128 0x5
+ 434 0091 49       		.uleb128 0x49
+ 435 0092 13       		.uleb128 0x13
+ 436 0093 3F       		.uleb128 0x3f
+ 437 0094 19       		.uleb128 0x19
+ 438 0095 3C       		.uleb128 0x3c
+ 439 0096 19       		.uleb128 0x19
+ 440 0097 00       		.byte	0
+ 441 0098 00       		.byte	0
+ 442 0099 0B       		.uleb128 0xb
+ 443 009a 35       		.uleb128 0x35
+ 444 009b 00       		.byte	0
+ 445 009c 49       		.uleb128 0x49
+ 446 009d 13       		.uleb128 0x13
+ 447 009e 00       		.byte	0
+ 448 009f 00       		.byte	0
+ 449 00a0 00       		.byte	0
+ 450              		.section	.debug_aranges,"",%progbits
+ 451 0000 1C000000 		.4byte	0x1c
+ 452 0004 0200     		.2byte	0x2
+ 453 0006 00000000 		.4byte	.Ldebug_info0
+ 454 000a 04       		.byte	0x4
+ 455 000b 00       		.byte	0
+ 456 000c 0000     		.2byte	0
+ 457 000e 0000     		.2byte	0
+ 458 0010 00000000 		.4byte	.LFB64
+ 459 0014 68000000 		.4byte	.LFE64-.LFB64
+ 460 0018 00000000 		.4byte	0
+ 461 001c 00000000 		.4byte	0
+ 462              		.section	.debug_ranges,"",%progbits
+ 463              	.Ldebug_ranges0:
+ 464 0000 00000000 		.4byte	.LFB64
+ 465 0004 68000000 		.4byte	.LFE64
+ 466 0008 00000000 		.4byte	0
+ 467 000c 00000000 		.4byte	0
+ 468              		.section	.debug_line,"",%progbits
+ 469              	.Ldebug_line0:
+ 470 0000 71010000 		.section	.debug_str,"MS",%progbits,1
+ 470      02004201 
+ 470      00000201 
+ 470      FB0E0D00 
+ 470      01010101 
+ 471              	.LASF22:
+ 472 0000 73616D70 		.ascii	"sample\000"
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 10
+
+
+ 472      6C6500
+ 473              	.LASF3:
+ 474 0007 5F5F7569 		.ascii	"__uint8_t\000"
+ 474      6E74385F 
+ 474      7400
+ 475              	.LASF27:
+ 476 0011 6368616E 		.ascii	"channel\000"
+ 476      6E656C00 
+ 477              	.LASF23:
+ 478 0019 474E5520 		.ascii	"GNU C11 5.4.1 20160609 (release) [ARM/embedded-5-br"
+ 478      43313120 
+ 478      352E342E 
+ 478      31203230 
+ 478      31363036 
+ 479 004c 616E6368 		.ascii	"anch revision 237715] -mcpu=cortex-m3 -mthumb -g -O"
+ 479      20726576 
+ 479      6973696F 
+ 479      6E203233 
+ 479      37373135 
+ 480 007f 30202D66 		.ascii	"0 -ffunction-sections -ffat-lto-objects\000"
+ 480      66756E63 
+ 480      74696F6E 
+ 480      2D736563 
+ 480      74696F6E 
+ 481              	.LASF6:
+ 482 00a7 5F5F696E 		.ascii	"__int32_t\000"
+ 482      7433325F 
+ 482      7400
+ 483              	.LASF15:
+ 484 00b1 666C6F61 		.ascii	"float\000"
+ 484      7400
+ 485              	.LASF26:
+ 486 00b7 53656E73 		.ascii	"Sensor_ComputePeakToPeak\000"
+ 486      6F725F43 
+ 486      6F6D7075 
+ 486      74655065 
+ 486      616B546F 
+ 487              	.LASF1:
+ 488 00d0 756E7369 		.ascii	"unsigned char\000"
+ 488      676E6564 
+ 488      20636861 
+ 488      7200
+ 489              	.LASF8:
+ 490 00de 6C6F6E67 		.ascii	"long unsigned int\000"
+ 490      20756E73 
+ 490      69676E65 
+ 490      6420696E 
+ 490      7400
+ 491              	.LASF5:
+ 492 00f0 73686F72 		.ascii	"short unsigned int\000"
+ 492      7420756E 
+ 492      7369676E 
+ 492      65642069 
+ 492      6E7400
+ 493              	.LASF28:
+ 494 0103 49544D5F 		.ascii	"ITM_RxBuffer\000"
+ 494      52784275 
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 11
+
+
+ 494      66666572 
+ 494      00
+ 495              	.LASF4:
+ 496 0110 5F5F7569 		.ascii	"__uint16_t\000"
+ 496      6E743136 
+ 496      5F7400
+ 497              	.LASF16:
+ 498 011b 646F7562 		.ascii	"double\000"
+ 498      6C6500
+ 499              	.LASF24:
+ 500 0122 73656E73 		.ascii	"sensors.c\000"
+ 500      6F72732E 
+ 500      6300
+ 501              	.LASF11:
+ 502 012c 756E7369 		.ascii	"unsigned int\000"
+ 502      676E6564 
+ 502      20696E74 
+ 502      00
+ 503              	.LASF10:
+ 504 0139 6C6F6E67 		.ascii	"long long unsigned int\000"
+ 504      206C6F6E 
+ 504      6720756E 
+ 504      7369676E 
+ 504      65642069 
+ 505              	.LASF12:
+ 506 0150 75696E74 		.ascii	"uint8_t\000"
+ 506      385F7400 
+ 507              	.LASF14:
+ 508 0158 696E7433 		.ascii	"int32_t\000"
+ 508      325F7400 
+ 509              	.LASF19:
+ 510 0160 73697A65 		.ascii	"sizetype\000"
+ 510      74797065 
+ 510      00
+ 511              	.LASF9:
+ 512 0169 6C6F6E67 		.ascii	"long long int\000"
+ 512      206C6F6E 
+ 512      6720696E 
+ 512      7400
+ 513              	.LASF17:
+ 514 0177 63686172 		.ascii	"char\000"
+ 514      00
+ 515              	.LASF2:
+ 516 017c 73686F72 		.ascii	"short int\000"
+ 516      7420696E 
+ 516      7400
+ 517              	.LASF13:
+ 518 0186 75696E74 		.ascii	"uint16_t\000"
+ 518      31365F74 
+ 518      00
+ 519              	.LASF21:
+ 520 018f 6D61785F 		.ascii	"max_val\000"
+ 520      76616C00 
+ 521              	.LASF20:
+ 522 0197 6D696E5F 		.ascii	"min_val\000"
+ 522      76616C00 
+ 523              	.LASF7:
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\cc49iKAA.s 			page 12
+
+
+ 524 019f 6C6F6E67 		.ascii	"long int\000"
+ 524      20696E74 
+ 524      00
+ 525              	.LASF18:
+ 526 01a8 6C6F6E67 		.ascii	"long double\000"
+ 526      20646F75 
+ 526      626C6500 
+ 527              	.LASF0:
+ 528 01b4 7369676E 		.ascii	"signed char\000"
+ 528      65642063 
+ 528      68617200 
+ 529              	.LASF25:
+ 530 01c0 433A5C55 		.ascii	"C:\\Users\\ylee818\\Documents\\GitHub\\COMPSYS301\\"
+ 530      73657273 
+ 530      5C796C65 
+ 530      65383138 
+ 530      5C446F63 
+ 531 01ed 42656E63 		.ascii	"Benchmarktest___combined\\Benchmarktest___combined\\"
+ 531      686D6172 
+ 531      6B746573 
+ 531      745F5F5F 
+ 531      636F6D62 
+ 532 021f 70736F63 		.ascii	"psoc student pack\\psoc_code_base\\CS301_Class.cyds"
+ 532      20737475 
+ 532      64656E74 
+ 532      20706163 
+ 532      6B5C7073 
+ 533 0250 6E00     		.ascii	"n\000"
+ 534              		.ident	"GCC: (GNU Tools for ARM Embedded Processors) 5.4.1 20160609 (release) [ARM/embedded-5-bran

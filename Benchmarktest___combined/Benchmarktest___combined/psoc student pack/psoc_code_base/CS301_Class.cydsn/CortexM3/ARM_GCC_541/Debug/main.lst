@@ -1,0 +1,3442 @@
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 1
+
+
+   1              		.syntax unified
+   2              		.cpu cortex-m3
+   3              		.fpu softvfp
+   4              		.eabi_attribute 20, 1
+   5              		.eabi_attribute 21, 1
+   6              		.eabi_attribute 23, 3
+   7              		.eabi_attribute 24, 1
+   8              		.eabi_attribute 25, 1
+   9              		.eabi_attribute 26, 1
+  10              		.eabi_attribute 30, 6
+  11              		.eabi_attribute 34, 1
+  12              		.eabi_attribute 18, 4
+  13              		.thumb
+  14              		.syntax unified
+  15              		.file	"main.c"
+  16              		.text
+  17              	.Ltext0:
+  18              		.cfi_sections	.debug_frame
+  19              		.bss
+  20              	sen1_on_line:
+  21 0000 00       		.space	1
+  22              	sen2_on_line:
+  23 0001 00       		.space	1
+  24              	sen3_on_line:
+  25 0002 00       		.space	1
+  26              	sen4_on_line:
+  27 0003 00       		.space	1
+  28              	sen5_on_line:
+  29 0004 00       		.space	1
+  30              	sen6_on_line:
+  31 0005 00       		.space	1
+  32              	g_direction:
+  33 0006 00       		.space	1
+  34              	g_stop_now:
+  35 0007 00       		.space	1
+  36              		.align	2
+  37              	g_dist_mm:
+  38 0008 00000000 		.space	4
+  39              		.global	__aeabi_ldivmod
+  40              		.section	.text.isr_qd_Handler,"ax",%progbits
+  41              		.align	2
+  42              		.global	isr_qd_Handler
+  43              		.thumb
+  44              		.thumb_func
+  45              		.type	isr_qd_Handler, %function
+  46              	isr_qd_Handler:
+  47              	.LFB64:
+  48              		.file 1 "main.c"
+   1:main.c        **** /* ========================= main.c (with PI steering) =========================
+   2:main.c        ****  * - S1/S2 still request blocking timed pivots (Directions_* module)
+   3:main.c        ****  * - Straight segments now use a PI controller on S4..S6 to keep the line centered
+   4:main.c        ****  * - Sensors, motor APIs, and ISR structure otherwise unchanged
+   5:main.c        ****  * ============================================================================ */
+   6:main.c        **** 
+   7:main.c        **** #include <project.h>
+   8:main.c        **** #include <stdint.h>
+   9:main.c        **** #include <stdbool.h>
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 2
+
+
+  10:main.c        **** 
+  11:main.c        **** #include <sensors.h>     // Sensor_ComputePeakToPeak()
+  12:main.c        **** #include "motor_s.h"     // set_motors_*, motor_enable  (unchanged API)
+  13:main.c        **** #include "directions.h"  // Directions_* turning module
+  14:main.c        **** 
+  15:main.c        **** /* ===== Loop pacing (keep your 8 ms) ===== */
+  16:main.c        **** #define LOOP_DT_MS               8u
+  17:main.c        **** #define DT_S   ( (float)LOOP_DT_MS / 1000.0f )
+  18:main.c        **** 
+  19:main.c        **** /* ===== Cruise speed / distance target (kept) ===== */
+  20:main.c        **** #define VMAX_CONST_MM_S        800
+  21:main.c        **** #define SPEED_FRAC_PERCENT      25
+  22:main.c        **** #define V_CRUISE_MM_S  ((int32_t)VMAX_CONST_MM_S * (int32_t)SPEED_FRAC_PERCENT / 100)
+  23:main.c        **** #define TARGET_DIST_MM        20000
+  24:main.c        **** 
+  25:main.c        **** /* ===== Encoder → mm conversion (kept from your code) ===== */
+  26:main.c        **** #define QD_SAMPLE_MS             5u
+  27:main.c        **** #define CPR_OUTSHAFT           228u
+  28:main.c        **** #define R_MM                    34
+  29:main.c        **** #define PI_X1000              3142
+  30:main.c        **** #define PERIM_MM_X1000   ((int32_t)(2 * PI_X1000 * R_MM))
+  31:main.c        **** #define MM_PER_COUNT_X1000     ( PERIM_MM_X1000 / CPR_OUTSHAFT )
+  32:main.c        **** #define CALIB_DIST_X1000     1500
+  33:main.c        **** #define APPLY_CALIB_DIST(x)  ( (int32_t)(((int64_t)(x) * CALIB_DIST_X1000 + 500)/1000) )
+  34:main.c        **** 
+  35:main.c        **** /* ===== S1/S2 relaxed detection (kept) ===== */
+  36:main.c        **** #define S_MINC_COUNTS            2u
+  37:main.c        **** #define S_MAXC_COUNTS          450u
+  38:main.c        **** #define S_HYST_COUNTS           16u
+  39:main.c        **** 
+  40:main.c        **** /* ===== Turn request filtering (kept) ===== */
+  41:main.c        **** #define TURN_DEBOUNCE_TICKS       5u
+  42:main.c        **** #define CLEAR_ARM_TICKS           4u
+  43:main.c        **** 
+  44:main.c        **** /* ===== Local sensor flags (used for S1/S2 edge) ===== */
+  45:main.c        **** static uint8_t sen1_on_line=0, sen2_on_line=0, sen3_on_line=0;
+  46:main.c        **** static uint8_t sen4_on_line=0, sen5_on_line=0, sen6_on_line=0;
+  47:main.c        **** 
+  48:main.c        **** /* ===== Global state (kept) ===== */
+  49:main.c        **** static volatile uint8_t g_direction = 0;   /* 0=straight, 1=left, 2=right */
+  50:main.c        **** static volatile uint8_t g_stop_now  = 0;
+  51:main.c        **** static volatile int32_t g_dist_mm   = 0;
+  52:main.c        **** 
+  53:main.c        **** /* -------------------------------
+  54:main.c        ****  * 5 ms Timer ISR: accumulate distance (kept)
+  55:main.c        ****  * ------------------------------- */
+  56:main.c        **** CY_ISR(isr_qd_Handler)
+  57:main.c        **** {
+  49              		.loc 1 57 0
+  50              		.cfi_startproc
+  51              		@ args = 0, pretend = 0, frame = 72
+  52              		@ frame_needed = 1, uses_anonymous_args = 0
+  53 0000 2DE9F04F 		push	{r4, r5, r6, r7, r8, r9, r10, fp, lr}
+  54              		.cfi_def_cfa_offset 36
+  55              		.cfi_offset 4, -36
+  56              		.cfi_offset 5, -32
+  57              		.cfi_offset 6, -28
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 3
+
+
+  58              		.cfi_offset 7, -24
+  59              		.cfi_offset 8, -20
+  60              		.cfi_offset 9, -16
+  61              		.cfi_offset 10, -12
+  62              		.cfi_offset 11, -8
+  63              		.cfi_offset 14, -4
+  64 0004 93B0     		sub	sp, sp, #76
+  65              		.cfi_def_cfa_offset 112
+  66 0006 00AF     		add	r7, sp, #0
+  67              		.cfi_def_cfa_register 7
+  58:main.c        ****     int32_t raw1 = QuadDec_M1_GetCounter();  QuadDec_M1_SetCounter(0);
+  68              		.loc 1 58 0
+  69 0008 FFF7FEFF 		bl	QuadDec_M1_GetCounter
+  70 000c 0346     		mov	r3, r0
+  71 000e 7B64     		str	r3, [r7, #68]
+  72 0010 0020     		movs	r0, #0
+  73 0012 FFF7FEFF 		bl	QuadDec_M1_SetCounter
+  59:main.c        ****     int32_t raw2 = QuadDec_M2_GetCounter();  QuadDec_M2_SetCounter(0);
+  74              		.loc 1 59 0
+  75 0016 FFF7FEFF 		bl	QuadDec_M2_GetCounter
+  76 001a 0346     		mov	r3, r0
+  77 001c 3B64     		str	r3, [r7, #64]
+  78 001e 0020     		movs	r0, #0
+  79 0020 FFF7FEFF 		bl	QuadDec_M2_SetCounter
+  60:main.c        **** 
+  61:main.c        ****     int32_t d1 = raw1, d2 = raw2;
+  80              		.loc 1 61 0
+  81 0024 7B6C     		ldr	r3, [r7, #68]
+  82 0026 FB63     		str	r3, [r7, #60]
+  83 0028 3B6C     		ldr	r3, [r7, #64]
+  84 002a BB63     		str	r3, [r7, #56]
+  62:main.c        ****     int32_t a1 = (d1 >= 0) ? d1 : -d1;
+  85              		.loc 1 62 0
+  86 002c FB6B     		ldr	r3, [r7, #60]
+  87 002e 002B     		cmp	r3, #0
+  88 0030 B8BF     		it	lt
+  89 0032 5B42     		rsblt	r3, r3, #0
+  90 0034 7B63     		str	r3, [r7, #52]
+  63:main.c        ****     int32_t a2 = (d2 >= 0) ? d2 : -d2;
+  91              		.loc 1 63 0
+  92 0036 BB6B     		ldr	r3, [r7, #56]
+  93 0038 002B     		cmp	r3, #0
+  94 003a B8BF     		it	lt
+  95 003c 5B42     		rsblt	r3, r3, #0
+  96 003e 3B63     		str	r3, [r7, #48]
+  64:main.c        ****     int32_t davg_abs  = (a1 + a2) / 2;
+  97              		.loc 1 64 0
+  98 0040 7A6B     		ldr	r2, [r7, #52]
+  99 0042 3B6B     		ldr	r3, [r7, #48]
+ 100 0044 1344     		add	r3, r3, r2
+ 101 0046 DA0F     		lsrs	r2, r3, #31
+ 102 0048 1344     		add	r3, r3, r2
+ 103 004a 5B10     		asrs	r3, r3, #1
+ 104 004c FB62     		str	r3, [r7, #44]
+  65:main.c        ****     int32_t davg_sign = ((d1 + d2) >= 0) ? +1 : -1;
+ 105              		.loc 1 65 0
+ 106 004e FA6B     		ldr	r2, [r7, #60]
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 4
+
+
+ 107 0050 BB6B     		ldr	r3, [r7, #56]
+ 108 0052 1344     		add	r3, r3, r2
+ 109 0054 002B     		cmp	r3, #0
+ 110 0056 01DB     		blt	.L2
+ 111              		.loc 1 65 0 is_stmt 0 discriminator 1
+ 112 0058 0123     		movs	r3, #1
+ 113 005a 01E0     		b	.L3
+ 114              	.L2:
+ 115              		.loc 1 65 0 discriminator 2
+ 116 005c 4FF0FF33 		mov	r3, #-1
+ 117              	.L3:
+ 118              		.loc 1 65 0 discriminator 4
+ 119 0060 BB62     		str	r3, [r7, #40]
+  66:main.c        **** 
+  67:main.c        ****     int64_t num_abs = (int64_t)davg_abs * MM_PER_COUNT_X1000;
+ 120              		.loc 1 67 0 is_stmt 1 discriminator 4
+ 121 0062 FB6A     		ldr	r3, [r7, #44]
+ 122 0064 1946     		mov	r1, r3
+ 123 0066 4FEAE172 		asr	r2, r1, #31
+ 124 006a 0B46     		mov	r3, r1
+ 125 006c 1446     		mov	r4, r2
+ 126 006e DB18     		adds	r3, r3, r3
+ 127 0070 44EB0404 		adc	r4, r4, r4
+ 128 0074 5B18     		adds	r3, r3, r1
+ 129 0076 44EB0204 		adc	r4, r4, r2
+ 130 007a 4FEA8409 		lsl	r9, r4, #2
+ 131 007e 49EA9379 		orr	r9, r9, r3, lsr #30
+ 132 0082 4FEA8308 		lsl	r8, r3, #2
+ 133 0086 4346     		mov	r3, r8
+ 134 0088 4C46     		mov	r4, r9
+ 135 008a 5B18     		adds	r3, r3, r1
+ 136 008c 44EB0204 		adc	r4, r4, r2
+ 137 0090 4FEAC40B 		lsl	fp, r4, #3
+ 138 0094 4BEA537B 		orr	fp, fp, r3, lsr #29
+ 139 0098 4FEAC30A 		lsl	r10, r3, #3
+ 140 009c 13EB0A03 		adds	r3, r3, r10
+ 141 00a0 44EB0B04 		adc	r4, r4, fp
+ 142 00a4 E000     		lsls	r0, r4, #3
+ 143 00a6 7861     		str	r0, [r7, #20]
+ 144 00a8 7869     		ldr	r0, [r7, #20]
+ 145 00aa 40EA5370 		orr	r0, r0, r3, lsr #29
+ 146 00ae 7861     		str	r0, [r7, #20]
+ 147 00b0 DB00     		lsls	r3, r3, #3
+ 148 00b2 3B61     		str	r3, [r7, #16]
+ 149 00b4 D7E90434 		ldrd	r3, [r7, #16]
+ 150 00b8 5B18     		adds	r3, r3, r1
+ 151 00ba 44EB0204 		adc	r4, r4, r2
+ 152 00be C7E90834 		strd	r3, [r7, #32]
+  68:main.c        ****     int32_t dmm_abs = (int32_t)((num_abs + 500) / 1000);
+ 153              		.loc 1 68 0 discriminator 4
+ 154 00c2 D7E90834 		ldrd	r3, [r7, #32]
+ 155 00c6 13F5FA70 		adds	r0, r3, #500
+ 156 00ca 44F10001 		adc	r1, r4, #0
+ 157 00ce 4FF47A72 		mov	r2, #1000
+ 158 00d2 4FF00003 		mov	r3, #0
+ 159 00d6 FFF7FEFF 		bl	__aeabi_ldivmod
+ 160 00da 0346     		mov	r3, r0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 5
+
+
+ 161 00dc 0C46     		mov	r4, r1
+ 162 00de FB61     		str	r3, [r7, #28]
+  69:main.c        ****     int32_t dmm_signed = APPLY_CALIB_DIST(dmm_abs) * davg_sign;
+ 163              		.loc 1 69 0 discriminator 4
+ 164 00e0 FB69     		ldr	r3, [r7, #28]
+ 165 00e2 1946     		mov	r1, r3
+ 166 00e4 4FEAE172 		asr	r2, r1, #31
+ 167 00e8 0B46     		mov	r3, r1
+ 168 00ea 1446     		mov	r4, r2
+ 169 00ec DB18     		adds	r3, r3, r3
+ 170 00ee 44EB0404 		adc	r4, r4, r4
+ 171 00f2 5B18     		adds	r3, r3, r1
+ 172 00f4 44EB0204 		adc	r4, r4, r2
+ 173 00f8 E000     		lsls	r0, r4, #3
+ 174 00fa F860     		str	r0, [r7, #12]
+ 175 00fc F868     		ldr	r0, [r7, #12]
+ 176 00fe 40EA5370 		orr	r0, r0, r3, lsr #29
+ 177 0102 F860     		str	r0, [r7, #12]
+ 178 0104 DB00     		lsls	r3, r3, #3
+ 179 0106 BB60     		str	r3, [r7, #8]
+ 180 0108 D7E90234 		ldrd	r3, [r7, #8]
+ 181 010c 5B18     		adds	r3, r3, r1
+ 182 010e 44EB0204 		adc	r4, r4, r2
+ 183 0112 2601     		lsls	r6, r4, #4
+ 184 0114 46EA1376 		orr	r6, r6, r3, lsr #28
+ 185 0118 1D01     		lsls	r5, r3, #4
+ 186 011a ED1A     		subs	r5, r5, r3
+ 187 011c 66EB0406 		sbc	r6, r6, r4
+ 188 0120 B300     		lsls	r3, r6, #2
+ 189 0122 7B60     		str	r3, [r7, #4]
+ 190 0124 7B68     		ldr	r3, [r7, #4]
+ 191 0126 43EA9573 		orr	r3, r3, r5, lsr #30
+ 192 012a 7B60     		str	r3, [r7, #4]
+ 193 012c AB00     		lsls	r3, r5, #2
+ 194 012e 3B60     		str	r3, [r7]
+ 195 0130 D7E90056 		ldrd	r5, [r7]
+ 196 0134 2B46     		mov	r3, r5
+ 197 0136 3446     		mov	r4, r6
+ 198 0138 13F5FA70 		adds	r0, r3, #500
+ 199 013c 44F10001 		adc	r1, r4, #0
+ 200 0140 4FF47A72 		mov	r2, #1000
+ 201 0144 4FF00003 		mov	r3, #0
+ 202 0148 FFF7FEFF 		bl	__aeabi_ldivmod
+ 203 014c 0346     		mov	r3, r0
+ 204 014e 0C46     		mov	r4, r1
+ 205 0150 1A46     		mov	r2, r3
+ 206 0152 BB6A     		ldr	r3, [r7, #40]
+ 207 0154 03FB02F3 		mul	r3, r3, r2
+ 208 0158 BB61     		str	r3, [r7, #24]
+  70:main.c        **** 
+  71:main.c        ****     g_dist_mm += dmm_signed;
+ 209              		.loc 1 71 0 discriminator 4
+ 210 015a 064B     		ldr	r3, .L4
+ 211 015c 1A68     		ldr	r2, [r3]
+ 212 015e BB69     		ldr	r3, [r7, #24]
+ 213 0160 1344     		add	r3, r3, r2
+ 214 0162 044A     		ldr	r2, .L4
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 6
+
+
+ 215 0164 1360     		str	r3, [r2]
+  72:main.c        ****     (void)Timer_QD_ReadStatusRegister();     // clear TC
+ 216              		.loc 1 72 0 discriminator 4
+ 217 0166 FFF7FEFF 		bl	Timer_QD_ReadStatusRegister
+  73:main.c        **** }
+ 218              		.loc 1 73 0 discriminator 4
+ 219 016a 00BF     		nop
+ 220 016c 4C37     		adds	r7, r7, #76
+ 221              		.cfi_def_cfa_offset 36
+ 222 016e BD46     		mov	sp, r7
+ 223              		.cfi_def_cfa_register 13
+ 224              		@ sp needed
+ 225 0170 BDE8F08F 		pop	{r4, r5, r6, r7, r8, r9, r10, fp, pc}
+ 226              	.L5:
+ 227              		.align	2
+ 228              	.L4:
+ 229 0174 08000000 		.word	g_dist_mm
+ 230              		.cfi_endproc
+ 231              	.LFE64:
+ 232              		.size	isr_qd_Handler, .-isr_qd_Handler
+ 233              		.global	__aeabi_ui2f
+ 234              		.global	__aeabi_fdiv
+ 235              		.section	.text.norm01_from_pp,"ax",%progbits
+ 236              		.align	2
+ 237              		.thumb
+ 238              		.thumb_func
+ 239              		.type	norm01_from_pp, %function
+ 240              	norm01_from_pp:
+ 241              	.LFB65:
+  74:main.c        **** 
+  75:main.c        **** /* ----------------------------------------------------------------
+  76:main.c        ****  * Utility: saturate and normalize peak-to-peak to [0..1] emphasis
+  77:main.c        ****  *  - below S_MINC -> 0, above S_MAXC -> 1, linear in-between
+  78:main.c        ****  * ---------------------------------------------------------------- */
+  79:main.c        **** static inline float norm01_from_pp(uint16_t pp)
+  80:main.c        **** {
+ 242              		.loc 1 80 0
+ 243              		.cfi_startproc
+ 244              		@ args = 0, pretend = 0, frame = 8
+ 245              		@ frame_needed = 1, uses_anonymous_args = 0
+ 246 0000 80B5     		push	{r7, lr}
+ 247              		.cfi_def_cfa_offset 8
+ 248              		.cfi_offset 7, -8
+ 249              		.cfi_offset 14, -4
+ 250 0002 82B0     		sub	sp, sp, #8
+ 251              		.cfi_def_cfa_offset 16
+ 252 0004 00AF     		add	r7, sp, #0
+ 253              		.cfi_def_cfa_register 7
+ 254 0006 0346     		mov	r3, r0
+ 255 0008 FB80     		strh	r3, [r7, #6]	@ movhi
+  81:main.c        ****     if (pp <= S_MINC_COUNTS) return 0.0f;
+ 256              		.loc 1 81 0
+ 257 000a FB88     		ldrh	r3, [r7, #6]
+ 258 000c 022B     		cmp	r3, #2
+ 259 000e 02D8     		bhi	.L7
+ 260              		.loc 1 81 0 is_stmt 0 discriminator 1
+ 261 0010 4FF00003 		mov	r3, #0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 7
+
+
+ 262 0014 11E0     		b	.L8
+ 263              	.L7:
+  82:main.c        ****     if (pp >= S_MAXC_COUNTS) return 1.0f;
+ 264              		.loc 1 82 0 is_stmt 1
+ 265 0016 FB88     		ldrh	r3, [r7, #6]
+ 266 0018 B3F5E17F 		cmp	r3, #450
+ 267 001c 02D3     		bcc	.L9
+ 268              		.loc 1 82 0 is_stmt 0 discriminator 1
+ 269 001e 4FF07E53 		mov	r3, #1065353216
+ 270 0022 0AE0     		b	.L8
+ 271              	.L9:
+  83:main.c        ****     return (float)(pp - S_MINC_COUNTS) / (float)(S_MAXC_COUNTS - S_MINC_COUNTS);
+ 272              		.loc 1 83 0 is_stmt 1
+ 273 0024 FB88     		ldrh	r3, [r7, #6]
+ 274 0026 023B     		subs	r3, r3, #2
+ 275 0028 1846     		mov	r0, r3
+ 276 002a FFF7FEFF 		bl	__aeabi_ui2f
+ 277 002e 0346     		mov	r3, r0
+ 278 0030 0449     		ldr	r1, .L10
+ 279 0032 1846     		mov	r0, r3
+ 280 0034 FFF7FEFF 		bl	__aeabi_fdiv
+ 281 0038 0346     		mov	r3, r0
+ 282              	.L8:
+  84:main.c        **** }
+ 283              		.loc 1 84 0
+ 284 003a 1846     		mov	r0, r3
+ 285 003c 0837     		adds	r7, r7, #8
+ 286              		.cfi_def_cfa_offset 8
+ 287 003e BD46     		mov	sp, r7
+ 288              		.cfi_def_cfa_register 13
+ 289              		@ sp needed
+ 290 0040 80BD     		pop	{r7, pc}
+ 291              	.L11:
+ 292 0042 00BF     		.align	2
+ 293              	.L10:
+ 294 0044 0000E043 		.word	1138753536
+ 295              		.cfi_endproc
+ 296              	.LFE65:
+ 297              		.size	norm01_from_pp, .-norm01_from_pp
+ 298              		.section	.text.light_sensors_update_and_maybe_request_turn,"ax",%progbits
+ 299              		.align	2
+ 300              		.thumb
+ 301              		.thumb_func
+ 302              		.type	light_sensors_update_and_maybe_request_turn, %function
+ 303              	light_sensors_update_and_maybe_request_turn:
+ 304              	.LFB66:
+  85:main.c        **** 
+  86:main.c        **** /* -------------------------------------------------------------
+  87:main.c        ****  * Read sensors and (maybe) request a turn based on S1 / S2
+  88:main.c        ****  *  - identical S1/S2 logic & flags as before (relaxed + hysteresis)
+  89:main.c        ****  *  - still sets sen3..sen6 boolean bands for quick checks
+  90:main.c        ****  * ------------------------------------------------------------- */
+  91:main.c        **** static void light_sensors_update_and_maybe_request_turn(
+  92:main.c        ****     /* also return the raw PP values for S4..S6 for PI */ 
+  93:main.c        ****     uint16_t* V4_pp, uint16_t* V5_pp, uint16_t* V6_pp)
+  94:main.c        **** {
+ 305              		.loc 1 94 0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 8
+
+
+ 306              		.cfi_startproc
+ 307              		@ args = 0, pretend = 0, frame = 40
+ 308              		@ frame_needed = 1, uses_anonymous_args = 0
+ 309 0000 80B5     		push	{r7, lr}
+ 310              		.cfi_def_cfa_offset 8
+ 311              		.cfi_offset 7, -8
+ 312              		.cfi_offset 14, -4
+ 313 0002 8AB0     		sub	sp, sp, #40
+ 314              		.cfi_def_cfa_offset 48
+ 315 0004 00AF     		add	r7, sp, #0
+ 316              		.cfi_def_cfa_register 7
+ 317 0006 F860     		str	r0, [r7, #12]
+ 318 0008 B960     		str	r1, [r7, #8]
+ 319 000a 7A60     		str	r2, [r7, #4]
+  95:main.c        ****     /* 1) Read ADC peak-to-peak */
+  96:main.c        ****     uint16_t V1 = Sensor_ComputePeakToPeak(0);
+ 320              		.loc 1 96 0
+ 321 000c 0020     		movs	r0, #0
+ 322 000e FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 323 0012 0346     		mov	r3, r0
+ 324 0014 FB84     		strh	r3, [r7, #38]	@ movhi
+  97:main.c        ****     uint16_t V2 = Sensor_ComputePeakToPeak(1);
+ 325              		.loc 1 97 0
+ 326 0016 0120     		movs	r0, #1
+ 327 0018 FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 328 001c 0346     		mov	r3, r0
+ 329 001e BB84     		strh	r3, [r7, #36]	@ movhi
+  98:main.c        ****     uint16_t V3 = Sensor_ComputePeakToPeak(2);
+ 330              		.loc 1 98 0
+ 331 0020 0220     		movs	r0, #2
+ 332 0022 FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 333 0026 0346     		mov	r3, r0
+ 334 0028 7B84     		strh	r3, [r7, #34]	@ movhi
+  99:main.c        ****     uint16_t V4 = Sensor_ComputePeakToPeak(3);
+ 335              		.loc 1 99 0
+ 336 002a 0320     		movs	r0, #3
+ 337 002c FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 338 0030 0346     		mov	r3, r0
+ 339 0032 3B84     		strh	r3, [r7, #32]	@ movhi
+ 100:main.c        ****     uint16_t V5 = Sensor_ComputePeakToPeak(4);
+ 340              		.loc 1 100 0
+ 341 0034 0420     		movs	r0, #4
+ 342 0036 FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 343 003a 0346     		mov	r3, r0
+ 344 003c FB83     		strh	r3, [r7, #30]	@ movhi
+ 101:main.c        ****     uint16_t V6 = Sensor_ComputePeakToPeak(5);
+ 345              		.loc 1 101 0
+ 346 003e 0520     		movs	r0, #5
+ 347 0040 FFF7FEFF 		bl	Sensor_ComputePeakToPeak
+ 348 0044 0346     		mov	r3, r0
+ 349 0046 BB83     		strh	r3, [r7, #28]	@ movhi
+ 102:main.c        **** 
+ 103:main.c        ****     if (V4_pp) *V4_pp = V4;
+ 350              		.loc 1 103 0
+ 351 0048 FB68     		ldr	r3, [r7, #12]
+ 352 004a 002B     		cmp	r3, #0
+ 353 004c 02D0     		beq	.L13
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 9
+
+
+ 354              		.loc 1 103 0 is_stmt 0 discriminator 1
+ 355 004e FB68     		ldr	r3, [r7, #12]
+ 356 0050 3A8C     		ldrh	r2, [r7, #32]	@ movhi
+ 357 0052 1A80     		strh	r2, [r3]	@ movhi
+ 358              	.L13:
+ 104:main.c        ****     if (V5_pp) *V5_pp = V5;
+ 359              		.loc 1 104 0 is_stmt 1
+ 360 0054 BB68     		ldr	r3, [r7, #8]
+ 361 0056 002B     		cmp	r3, #0
+ 362 0058 02D0     		beq	.L14
+ 363              		.loc 1 104 0 is_stmt 0 discriminator 1
+ 364 005a BB68     		ldr	r3, [r7, #8]
+ 365 005c FA8B     		ldrh	r2, [r7, #30]	@ movhi
+ 366 005e 1A80     		strh	r2, [r3]	@ movhi
+ 367              	.L14:
+ 105:main.c        ****     if (V6_pp) *V6_pp = V6;
+ 368              		.loc 1 105 0 is_stmt 1
+ 369 0060 7B68     		ldr	r3, [r7, #4]
+ 370 0062 002B     		cmp	r3, #0
+ 371 0064 02D0     		beq	.L15
+ 372              		.loc 1 105 0 is_stmt 0 discriminator 1
+ 373 0066 7B68     		ldr	r3, [r7, #4]
+ 374 0068 BA8B     		ldrh	r2, [r7, #28]	@ movhi
+ 375 006a 1A80     		strh	r2, [r3]	@ movhi
+ 376              	.L15:
+ 106:main.c        **** 
+ 107:main.c        ****     /* 2) S1/S2 relaxed + hysteresis (kept) */
+ 108:main.c        ****     static uint8_t s1 = 0, s2 = 0;
+ 109:main.c        ****     uint8_t s1_enter = (V1 > S_MINC_COUNTS && V1 < S_MAXC_COUNTS);
+ 377              		.loc 1 109 0 is_stmt 1
+ 378 006c FB8C     		ldrh	r3, [r7, #38]
+ 379 006e 022B     		cmp	r3, #2
+ 380 0070 05D9     		bls	.L16
+ 381              		.loc 1 109 0 is_stmt 0 discriminator 1
+ 382 0072 FB8C     		ldrh	r3, [r7, #38]
+ 383 0074 B3F5E17F 		cmp	r3, #450
+ 384 0078 01D2     		bcs	.L16
+ 385              		.loc 1 109 0 discriminator 3
+ 386 007a 0123     		movs	r3, #1
+ 387 007c 00E0     		b	.L17
+ 388              	.L16:
+ 389              		.loc 1 109 0 discriminator 4
+ 390 007e 0023     		movs	r3, #0
+ 391              	.L17:
+ 392              		.loc 1 109 0 discriminator 6
+ 393 0080 FB76     		strb	r3, [r7, #27]
+ 110:main.c        ****     uint8_t s2_enter = (V2 > S_MINC_COUNTS && V2 < S_MAXC_COUNTS);
+ 394              		.loc 1 110 0 is_stmt 1 discriminator 6
+ 395 0082 BB8C     		ldrh	r3, [r7, #36]
+ 396 0084 022B     		cmp	r3, #2
+ 397 0086 05D9     		bls	.L18
+ 398              		.loc 1 110 0 is_stmt 0 discriminator 1
+ 399 0088 BB8C     		ldrh	r3, [r7, #36]
+ 400 008a B3F5E17F 		cmp	r3, #450
+ 401 008e 01D2     		bcs	.L18
+ 402              		.loc 1 110 0 discriminator 3
+ 403 0090 0123     		movs	r3, #1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 10
+
+
+ 404 0092 00E0     		b	.L19
+ 405              	.L18:
+ 406              		.loc 1 110 0 discriminator 4
+ 407 0094 0023     		movs	r3, #0
+ 408              	.L19:
+ 409              		.loc 1 110 0 discriminator 6
+ 410 0096 BB76     		strb	r3, [r7, #26]
+ 111:main.c        ****     uint8_t s1_exit  = (V1 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 411              		.loc 1 111 0 is_stmt 1 discriminator 6
+ 412 0098 FB8C     		ldrh	r3, [r7, #38]
+ 413 009a B3F5E97F 		cmp	r3, #466
+ 414 009e 03D8     		bhi	.L20
+ 112:main.c        ****                        ((V1 + S_HYST_COUNTS) < S_MINC_COUNTS);
+ 415              		.loc 1 112 0 discriminator 2
+ 416 00a0 FB8C     		ldrh	r3, [r7, #38]
+ 417 00a2 1033     		adds	r3, r3, #16
+ 111:main.c        ****     uint8_t s1_exit  = (V1 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 418              		.loc 1 111 0 discriminator 2
+ 419 00a4 012B     		cmp	r3, #1
+ 420 00a6 01D8     		bhi	.L21
+ 421              	.L20:
+ 111:main.c        ****     uint8_t s1_exit  = (V1 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 422              		.loc 1 111 0 is_stmt 0 discriminator 3
+ 423 00a8 0123     		movs	r3, #1
+ 424 00aa 00E0     		b	.L22
+ 425              	.L21:
+ 111:main.c        ****     uint8_t s1_exit  = (V1 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 426              		.loc 1 111 0 discriminator 4
+ 427 00ac 0023     		movs	r3, #0
+ 428              	.L22:
+ 111:main.c        ****     uint8_t s1_exit  = (V1 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 429              		.loc 1 111 0 discriminator 6
+ 430 00ae 7B76     		strb	r3, [r7, #25]
+ 113:main.c        ****     uint8_t s2_exit  = (V2 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 431              		.loc 1 113 0 is_stmt 1 discriminator 6
+ 432 00b0 BB8C     		ldrh	r3, [r7, #36]
+ 433 00b2 B3F5E97F 		cmp	r3, #466
+ 434 00b6 03D8     		bhi	.L23
+ 114:main.c        ****                        ((V2 + S_HYST_COUNTS) < S_MINC_COUNTS);
+ 435              		.loc 1 114 0 discriminator 2
+ 436 00b8 BB8C     		ldrh	r3, [r7, #36]
+ 437 00ba 1033     		adds	r3, r3, #16
+ 113:main.c        ****     uint8_t s2_exit  = (V2 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 438              		.loc 1 113 0 discriminator 2
+ 439 00bc 012B     		cmp	r3, #1
+ 440 00be 01D8     		bhi	.L24
+ 441              	.L23:
+ 113:main.c        ****     uint8_t s2_exit  = (V2 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 442              		.loc 1 113 0 is_stmt 0 discriminator 3
+ 443 00c0 0123     		movs	r3, #1
+ 444 00c2 00E0     		b	.L25
+ 445              	.L24:
+ 113:main.c        ****     uint8_t s2_exit  = (V2 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ 446              		.loc 1 113 0 discriminator 4
+ 447 00c4 0023     		movs	r3, #0
+ 448              	.L25:
+ 113:main.c        ****     uint8_t s2_exit  = (V2 > (S_MAXC_COUNTS + S_HYST_COUNTS)) ||
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 11
+
+
+ 449              		.loc 1 113 0 discriminator 6
+ 450 00c6 3B76     		strb	r3, [r7, #24]
+ 115:main.c        **** 
+ 116:main.c        ****     if (!s1) s1 = s1_enter ? 1u : 0u; else s1 = s1_exit ? 0u : 1u;
+ 451              		.loc 1 116 0 is_stmt 1 discriminator 6
+ 452 00c8 6F4B     		ldr	r3, .L59
+ 453 00ca 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 454 00cc 002B     		cmp	r3, #0
+ 455 00ce 08D1     		bne	.L26
+ 456              		.loc 1 116 0 is_stmt 0 discriminator 1
+ 457 00d0 FB7E     		ldrb	r3, [r7, #27]	@ zero_extendqisi2
+ 458 00d2 002B     		cmp	r3, #0
+ 459 00d4 01D0     		beq	.L27
+ 460              		.loc 1 116 0 discriminator 3
+ 461 00d6 0122     		movs	r2, #1
+ 462 00d8 00E0     		b	.L28
+ 463              	.L27:
+ 464              		.loc 1 116 0 discriminator 4
+ 465 00da 0022     		movs	r2, #0
+ 466              	.L28:
+ 467              		.loc 1 116 0 discriminator 6
+ 468 00dc 6A4B     		ldr	r3, .L59
+ 469 00de 1A70     		strb	r2, [r3]
+ 470 00e0 08E0     		b	.L29
+ 471              	.L26:
+ 472              		.loc 1 116 0 discriminator 2
+ 473 00e2 7B7E     		ldrb	r3, [r7, #25]	@ zero_extendqisi2
+ 474 00e4 002B     		cmp	r3, #0
+ 475 00e6 0CBF     		ite	eq
+ 476 00e8 0123     		moveq	r3, #1
+ 477 00ea 0023     		movne	r3, #0
+ 478 00ec DBB2     		uxtb	r3, r3
+ 479 00ee 1A46     		mov	r2, r3
+ 480 00f0 654B     		ldr	r3, .L59
+ 481 00f2 1A70     		strb	r2, [r3]
+ 482              	.L29:
+ 117:main.c        ****     if (!s2) s2 = s2_enter ? 1u : 0u; else s2 = s2_exit ? 0u : 1u;
+ 483              		.loc 1 117 0 is_stmt 1
+ 484 00f4 654B     		ldr	r3, .L59+4
+ 485 00f6 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 486 00f8 002B     		cmp	r3, #0
+ 487 00fa 08D1     		bne	.L30
+ 488              		.loc 1 117 0 is_stmt 0 discriminator 1
+ 489 00fc BB7E     		ldrb	r3, [r7, #26]	@ zero_extendqisi2
+ 490 00fe 002B     		cmp	r3, #0
+ 491 0100 01D0     		beq	.L31
+ 492              		.loc 1 117 0 discriminator 3
+ 493 0102 0122     		movs	r2, #1
+ 494 0104 00E0     		b	.L32
+ 495              	.L31:
+ 496              		.loc 1 117 0 discriminator 4
+ 497 0106 0022     		movs	r2, #0
+ 498              	.L32:
+ 499              		.loc 1 117 0 discriminator 6
+ 500 0108 604B     		ldr	r3, .L59+4
+ 501 010a 1A70     		strb	r2, [r3]
+ 502 010c 08E0     		b	.L33
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 12
+
+
+ 503              	.L30:
+ 504              		.loc 1 117 0 discriminator 2
+ 505 010e 3B7E     		ldrb	r3, [r7, #24]	@ zero_extendqisi2
+ 506 0110 002B     		cmp	r3, #0
+ 507 0112 0CBF     		ite	eq
+ 508 0114 0123     		moveq	r3, #1
+ 509 0116 0023     		movne	r3, #0
+ 510 0118 DBB2     		uxtb	r3, r3
+ 511 011a 1A46     		mov	r2, r3
+ 512 011c 5B4B     		ldr	r3, .L59+4
+ 513 011e 1A70     		strb	r2, [r3]
+ 514              	.L33:
+ 118:main.c        **** 
+ 119:main.c        ****     sen1_on_line = s1;
+ 515              		.loc 1 119 0 is_stmt 1
+ 516 0120 594B     		ldr	r3, .L59
+ 517 0122 1A78     		ldrb	r2, [r3]	@ zero_extendqisi2
+ 518 0124 5A4B     		ldr	r3, .L59+8
+ 519 0126 1A70     		strb	r2, [r3]
+ 120:main.c        ****     sen2_on_line = s2;
+ 520              		.loc 1 120 0
+ 521 0128 584B     		ldr	r3, .L59+4
+ 522 012a 1A78     		ldrb	r2, [r3]	@ zero_extendqisi2
+ 523 012c 594B     		ldr	r3, .L59+12
+ 524 012e 1A70     		strb	r2, [r3]
+ 121:main.c        **** 
+ 122:main.c        ****     /* 3) S3..S6 simple band booleans (kept) */
+ 123:main.c        ****     sen3_on_line = (V3 > 10 && V3 < 100) ? 1u : 0u;
+ 525              		.loc 1 123 0
+ 526 0130 7B8C     		ldrh	r3, [r7, #34]
+ 527 0132 0A2B     		cmp	r3, #10
+ 528 0134 04D9     		bls	.L34
+ 529              		.loc 1 123 0 is_stmt 0 discriminator 1
+ 530 0136 7B8C     		ldrh	r3, [r7, #34]
+ 531 0138 632B     		cmp	r3, #99
+ 532 013a 01D8     		bhi	.L34
+ 533              		.loc 1 123 0 discriminator 3
+ 534 013c 0122     		movs	r2, #1
+ 535 013e 00E0     		b	.L35
+ 536              	.L34:
+ 537              		.loc 1 123 0 discriminator 4
+ 538 0140 0022     		movs	r2, #0
+ 539              	.L35:
+ 540              		.loc 1 123 0 discriminator 6
+ 541 0142 554B     		ldr	r3, .L59+16
+ 542 0144 1A70     		strb	r2, [r3]
+ 124:main.c        ****     sen4_on_line = (V4 > 10 && V4 < 100) ? 1u : 0u;
+ 543              		.loc 1 124 0 is_stmt 1 discriminator 6
+ 544 0146 3B8C     		ldrh	r3, [r7, #32]
+ 545 0148 0A2B     		cmp	r3, #10
+ 546 014a 04D9     		bls	.L36
+ 547              		.loc 1 124 0 is_stmt 0 discriminator 1
+ 548 014c 3B8C     		ldrh	r3, [r7, #32]
+ 549 014e 632B     		cmp	r3, #99
+ 550 0150 01D8     		bhi	.L36
+ 551              		.loc 1 124 0 discriminator 3
+ 552 0152 0122     		movs	r2, #1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 13
+
+
+ 553 0154 00E0     		b	.L37
+ 554              	.L36:
+ 555              		.loc 1 124 0 discriminator 4
+ 556 0156 0022     		movs	r2, #0
+ 557              	.L37:
+ 558              		.loc 1 124 0 discriminator 6
+ 559 0158 504B     		ldr	r3, .L59+20
+ 560 015a 1A70     		strb	r2, [r3]
+ 125:main.c        ****     sen5_on_line = (V5 > 10 && V5 < 100) ? 1u : 0u;
+ 561              		.loc 1 125 0 is_stmt 1 discriminator 6
+ 562 015c FB8B     		ldrh	r3, [r7, #30]
+ 563 015e 0A2B     		cmp	r3, #10
+ 564 0160 04D9     		bls	.L38
+ 565              		.loc 1 125 0 is_stmt 0 discriminator 1
+ 566 0162 FB8B     		ldrh	r3, [r7, #30]
+ 567 0164 632B     		cmp	r3, #99
+ 568 0166 01D8     		bhi	.L38
+ 569              		.loc 1 125 0 discriminator 3
+ 570 0168 0122     		movs	r2, #1
+ 571 016a 00E0     		b	.L39
+ 572              	.L38:
+ 573              		.loc 1 125 0 discriminator 4
+ 574 016c 0022     		movs	r2, #0
+ 575              	.L39:
+ 576              		.loc 1 125 0 discriminator 6
+ 577 016e 4C4B     		ldr	r3, .L59+24
+ 578 0170 1A70     		strb	r2, [r3]
+ 126:main.c        ****     sen6_on_line = (V6 > 10 && V6 < 100) ? 1u : 0u;
+ 579              		.loc 1 126 0 is_stmt 1 discriminator 6
+ 580 0172 BB8B     		ldrh	r3, [r7, #28]
+ 581 0174 0A2B     		cmp	r3, #10
+ 582 0176 04D9     		bls	.L40
+ 583              		.loc 1 126 0 is_stmt 0 discriminator 1
+ 584 0178 BB8B     		ldrh	r3, [r7, #28]
+ 585 017a 632B     		cmp	r3, #99
+ 586 017c 01D8     		bhi	.L40
+ 587              		.loc 1 126 0 discriminator 3
+ 588 017e 0122     		movs	r2, #1
+ 589 0180 00E0     		b	.L41
+ 590              	.L40:
+ 591              		.loc 1 126 0 discriminator 4
+ 592 0182 0022     		movs	r2, #0
+ 593              	.L41:
+ 594              		.loc 1 126 0 discriminator 6
+ 595 0184 474B     		ldr	r3, .L59+28
+ 596 0186 1A70     		strb	r2, [r3]
+ 127:main.c        **** 
+ 128:main.c        ****     /* 4) Turn request on S1/S2: debounce + latch + must-clear-first */
+ 129:main.c        ****     static uint8_t debL = 0, debR = 0;
+ 130:main.c        ****     static uint8_t latched_any = 0;
+ 131:main.c        ****     static uint8_t armed = 0;
+ 132:main.c        ****     static uint8_t clear_cnt = 0;
+ 133:main.c        **** 
+ 134:main.c        ****     uint8_t left_now  = sen1_on_line;
+ 597              		.loc 1 134 0 is_stmt 1 discriminator 6
+ 598 0188 414B     		ldr	r3, .L59+8
+ 599 018a 1B78     		ldrb	r3, [r3]
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 14
+
+
+ 600 018c FB75     		strb	r3, [r7, #23]
+ 135:main.c        ****     uint8_t right_now = sen2_on_line;
+ 601              		.loc 1 135 0 discriminator 6
+ 602 018e 414B     		ldr	r3, .L59+12
+ 603 0190 1B78     		ldrb	r3, [r3]
+ 604 0192 BB75     		strb	r3, [r7, #22]
+ 136:main.c        ****     uint8_t both_clear_now = (uint8_t)(!left_now && !right_now);
+ 605              		.loc 1 136 0 discriminator 6
+ 606 0194 FB7D     		ldrb	r3, [r7, #23]	@ zero_extendqisi2
+ 607 0196 002B     		cmp	r3, #0
+ 608 0198 04D1     		bne	.L42
+ 609              		.loc 1 136 0 is_stmt 0 discriminator 1
+ 610 019a BB7D     		ldrb	r3, [r7, #22]	@ zero_extendqisi2
+ 611 019c 002B     		cmp	r3, #0
+ 612 019e 01D1     		bne	.L42
+ 613              		.loc 1 136 0 discriminator 3
+ 614 01a0 0123     		movs	r3, #1
+ 615 01a2 00E0     		b	.L43
+ 616              	.L42:
+ 617              		.loc 1 136 0 discriminator 4
+ 618 01a4 0023     		movs	r3, #0
+ 619              	.L43:
+ 620              		.loc 1 136 0 discriminator 6
+ 621 01a6 7B75     		strb	r3, [r7, #21]
+ 137:main.c        **** 
+ 138:main.c        ****     if (both_clear_now) {
+ 622              		.loc 1 138 0 is_stmt 1 discriminator 6
+ 623 01a8 7B7D     		ldrb	r3, [r7, #21]	@ zero_extendqisi2
+ 624 01aa 002B     		cmp	r3, #0
+ 625 01ac 11D0     		beq	.L44
+ 139:main.c        ****         if (clear_cnt < CLEAR_ARM_TICKS) clear_cnt++;
+ 626              		.loc 1 139 0
+ 627 01ae 3E4B     		ldr	r3, .L59+32
+ 628 01b0 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 629 01b2 032B     		cmp	r3, #3
+ 630 01b4 05D8     		bhi	.L45
+ 631              		.loc 1 139 0 is_stmt 0 discriminator 1
+ 632 01b6 3C4B     		ldr	r3, .L59+32
+ 633 01b8 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 634 01ba 0133     		adds	r3, r3, #1
+ 635 01bc DAB2     		uxtb	r2, r3
+ 636 01be 3A4B     		ldr	r3, .L59+32
+ 637 01c0 1A70     		strb	r2, [r3]
+ 638              	.L45:
+ 140:main.c        ****         if (clear_cnt >= CLEAR_ARM_TICKS) armed = 1u;
+ 639              		.loc 1 140 0 is_stmt 1
+ 640 01c2 394B     		ldr	r3, .L59+32
+ 641 01c4 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 642 01c6 032B     		cmp	r3, #3
+ 643 01c8 06D9     		bls	.L47
+ 644              		.loc 1 140 0 is_stmt 0 discriminator 1
+ 645 01ca 384B     		ldr	r3, .L59+36
+ 646 01cc 0122     		movs	r2, #1
+ 647 01ce 1A70     		strb	r2, [r3]
+ 648 01d0 02E0     		b	.L47
+ 649              	.L44:
+ 141:main.c        ****     } else {
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 15
+
+
+ 142:main.c        ****         clear_cnt = 0;
+ 650              		.loc 1 142 0 is_stmt 1
+ 651 01d2 354B     		ldr	r3, .L59+32
+ 652 01d4 0022     		movs	r2, #0
+ 653 01d6 1A70     		strb	r2, [r3]
+ 654              	.L47:
+ 143:main.c        ****     }
+ 144:main.c        **** 
+ 145:main.c        ****     debL = left_now  ? (uint8_t)(debL + 1u) : 0u;
+ 655              		.loc 1 145 0
+ 656 01d8 FB7D     		ldrb	r3, [r7, #23]	@ zero_extendqisi2
+ 657 01da 002B     		cmp	r3, #0
+ 658 01dc 04D0     		beq	.L48
+ 659              		.loc 1 145 0 is_stmt 0 discriminator 1
+ 660 01de 344B     		ldr	r3, .L59+40
+ 661 01e0 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 662 01e2 0133     		adds	r3, r3, #1
+ 663 01e4 DBB2     		uxtb	r3, r3
+ 664 01e6 00E0     		b	.L49
+ 665              	.L48:
+ 666              		.loc 1 145 0 discriminator 2
+ 667 01e8 0023     		movs	r3, #0
+ 668              	.L49:
+ 669              		.loc 1 145 0 discriminator 4
+ 670 01ea 314A     		ldr	r2, .L59+40
+ 671 01ec 1370     		strb	r3, [r2]
+ 146:main.c        ****     debR = right_now ? (uint8_t)(debR + 1u) : 0u;
+ 672              		.loc 1 146 0 is_stmt 1 discriminator 4
+ 673 01ee BB7D     		ldrb	r3, [r7, #22]	@ zero_extendqisi2
+ 674 01f0 002B     		cmp	r3, #0
+ 675 01f2 04D0     		beq	.L50
+ 676              		.loc 1 146 0 is_stmt 0 discriminator 1
+ 677 01f4 2F4B     		ldr	r3, .L59+44
+ 678 01f6 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 679 01f8 0133     		adds	r3, r3, #1
+ 680 01fa DBB2     		uxtb	r3, r3
+ 681 01fc 00E0     		b	.L51
+ 682              	.L50:
+ 683              		.loc 1 146 0 discriminator 2
+ 684 01fe 0023     		movs	r3, #0
+ 685              	.L51:
+ 686              		.loc 1 146 0 discriminator 4
+ 687 0200 2C4A     		ldr	r2, .L59+44
+ 688 0202 1370     		strb	r3, [r2]
+ 147:main.c        **** 
+ 148:main.c        ****     uint8_t left_stable  = (debL >= TURN_DEBOUNCE_TICKS);
+ 689              		.loc 1 148 0 is_stmt 1 discriminator 4
+ 690 0204 2A4B     		ldr	r3, .L59+40
+ 691 0206 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 692 0208 042B     		cmp	r3, #4
+ 693 020a 8CBF     		ite	hi
+ 694 020c 0123     		movhi	r3, #1
+ 695 020e 0023     		movls	r3, #0
+ 696 0210 DBB2     		uxtb	r3, r3
+ 697 0212 3B75     		strb	r3, [r7, #20]
+ 149:main.c        ****     uint8_t right_stable = (debR >= TURN_DEBOUNCE_TICKS);
+ 698              		.loc 1 149 0 discriminator 4
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 16
+
+
+ 699 0214 274B     		ldr	r3, .L59+44
+ 700 0216 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 701 0218 042B     		cmp	r3, #4
+ 702 021a 8CBF     		ite	hi
+ 703 021c 0123     		movhi	r3, #1
+ 704 021e 0023     		movls	r3, #0
+ 705 0220 DBB2     		uxtb	r3, r3
+ 706 0222 FB74     		strb	r3, [r7, #19]
+ 150:main.c        ****     uint8_t any_now      = (uint8_t)(left_stable | right_stable);
+ 707              		.loc 1 150 0 discriminator 4
+ 708 0224 3A7D     		ldrb	r2, [r7, #20]
+ 709 0226 FB7C     		ldrb	r3, [r7, #19]
+ 710 0228 1343     		orrs	r3, r3, r2
+ 711 022a BB74     		strb	r3, [r7, #18]
+ 151:main.c        **** 
+ 152:main.c        ****     if (g_direction == 0u){
+ 712              		.loc 1 152 0 discriminator 4
+ 713 022c 224B     		ldr	r3, .L59+48
+ 714 022e 1B78     		ldrb	r3, [r3]
+ 715 0230 DBB2     		uxtb	r3, r3
+ 716 0232 002B     		cmp	r3, #0
+ 717 0234 20D1     		bne	.L52
+ 153:main.c        ****         if (armed && !latched_any && any_now){
+ 718              		.loc 1 153 0
+ 719 0236 1D4B     		ldr	r3, .L59+36
+ 720 0238 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 721 023a 002B     		cmp	r3, #0
+ 722 023c 15D0     		beq	.L53
+ 723              		.loc 1 153 0 is_stmt 0 discriminator 1
+ 724 023e 1F4B     		ldr	r3, .L59+52
+ 725 0240 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 726 0242 002B     		cmp	r3, #0
+ 727 0244 11D1     		bne	.L53
+ 728              		.loc 1 153 0 discriminator 2
+ 729 0246 BB7C     		ldrb	r3, [r7, #18]	@ zero_extendqisi2
+ 730 0248 002B     		cmp	r3, #0
+ 731 024a 0ED0     		beq	.L53
+ 154:main.c        ****             g_direction = left_stable ? 1u : 2u;   // 1=LEFT (S1), 2=RIGHT (S2)
+ 732              		.loc 1 154 0 is_stmt 1
+ 733 024c 3B7D     		ldrb	r3, [r7, #20]	@ zero_extendqisi2
+ 734 024e 002B     		cmp	r3, #0
+ 735 0250 01D0     		beq	.L54
+ 736              		.loc 1 154 0 is_stmt 0 discriminator 1
+ 737 0252 0122     		movs	r2, #1
+ 738 0254 00E0     		b	.L55
+ 739              	.L54:
+ 740              		.loc 1 154 0 discriminator 2
+ 741 0256 0222     		movs	r2, #2
+ 742              	.L55:
+ 743              		.loc 1 154 0 discriminator 4
+ 744 0258 174B     		ldr	r3, .L59+48
+ 745 025a 1A70     		strb	r2, [r3]
+ 155:main.c        ****             latched_any = 1u;
+ 746              		.loc 1 155 0 is_stmt 1 discriminator 4
+ 747 025c 174B     		ldr	r3, .L59+52
+ 748 025e 0122     		movs	r2, #1
+ 749 0260 1A70     		strb	r2, [r3]
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 17
+
+
+ 156:main.c        ****             armed = 0u;
+ 750              		.loc 1 156 0 discriminator 4
+ 751 0262 124B     		ldr	r3, .L59+36
+ 752 0264 0022     		movs	r2, #0
+ 753 0266 1A70     		strb	r2, [r3]
+ 157:main.c        ****         } else if (!any_now){
+ 158:main.c        ****             latched_any = 0u;
+ 159:main.c        ****         }
+ 160:main.c        ****     } else {
+ 161:main.c        ****         latched_any = 1u;
+ 162:main.c        ****     }
+ 163:main.c        **** }
+ 754              		.loc 1 163 0 discriminator 4
+ 755 0268 09E0     		b	.L58
+ 756              	.L53:
+ 157:main.c        ****         } else if (!any_now){
+ 757              		.loc 1 157 0
+ 758 026a BB7C     		ldrb	r3, [r7, #18]	@ zero_extendqisi2
+ 759 026c 002B     		cmp	r3, #0
+ 760 026e 06D1     		bne	.L58
+ 158:main.c        ****         }
+ 761              		.loc 1 158 0
+ 762 0270 124B     		ldr	r3, .L59+52
+ 763 0272 0022     		movs	r2, #0
+ 764 0274 1A70     		strb	r2, [r3]
+ 765              		.loc 1 163 0
+ 766 0276 02E0     		b	.L58
+ 767              	.L52:
+ 161:main.c        ****     }
+ 768              		.loc 1 161 0
+ 769 0278 104B     		ldr	r3, .L59+52
+ 770 027a 0122     		movs	r2, #1
+ 771 027c 1A70     		strb	r2, [r3]
+ 772              	.L58:
+ 773              		.loc 1 163 0
+ 774 027e 00BF     		nop
+ 775 0280 2837     		adds	r7, r7, #40
+ 776              		.cfi_def_cfa_offset 8
+ 777 0282 BD46     		mov	sp, r7
+ 778              		.cfi_def_cfa_register 13
+ 779              		@ sp needed
+ 780 0284 80BD     		pop	{r7, pc}
+ 781              	.L60:
+ 782 0286 00BF     		.align	2
+ 783              	.L59:
+ 784 0288 0C000000 		.word	s1.8243
+ 785 028c 0D000000 		.word	s2.8244
+ 786 0290 00000000 		.word	sen1_on_line
+ 787 0294 01000000 		.word	sen2_on_line
+ 788 0298 02000000 		.word	sen3_on_line
+ 789 029c 03000000 		.word	sen4_on_line
+ 790 02a0 04000000 		.word	sen5_on_line
+ 791 02a4 05000000 		.word	sen6_on_line
+ 792 02a8 0E000000 		.word	clear_cnt.8253
+ 793 02ac 0F000000 		.word	armed.8252
+ 794 02b0 10000000 		.word	debL.8249
+ 795 02b4 11000000 		.word	debR.8250
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 18
+
+
+ 796 02b8 06000000 		.word	g_direction
+ 797 02bc 12000000 		.word	latched_any.8251
+ 798              		.cfi_endproc
+ 799              	.LFE66:
+ 800              		.size	light_sensors_update_and_maybe_request_turn, .-light_sensors_update_and_maybe_request_turn
+ 801              		.global	__aeabi_fcmplt
+ 802              		.global	__aeabi_fcmpgt
+ 803              		.section	.text._clampf,"ax",%progbits
+ 804              		.align	2
+ 805              		.thumb
+ 806              		.thumb_func
+ 807              		.type	_clampf, %function
+ 808              	_clampf:
+ 809              	.LFB67:
+ 164:main.c        **** 
+ 165:main.c        **** /* ================= PI Controller (steer) =================
+ 166:main.c        ****  * error e = weighted position from S4..S6, where
+ 167:main.c        ****  *   S4 = -1, S5 = 0, S6 = +1 (weights by normalized contrast)
+ 168:main.c        ****  * u = Kp*e + Ki*integral(e)
+ 169:main.c        ****  * Output u is clamped to [-STEER_MAX..+STEER_MAX] (in duty%)
+ 170:main.c        ****  * Integral anti-windup: freeze integration when output is clamped
+ 171:main.c        ****  * ======================================================== */
+ 172:main.c        **** 
+ 173:main.c        **** /* Tunables (start conservative; increase Kp first, then Ki) */
+ 174:main.c        **** #define STEER_MAX        18     /* max ± steer duty applied */
+ 175:main.c        **** #define KP               14.0f  /* proportional gain (duty per unit error) */
+ 176:main.c        **** #define KI               2.0f   /* integral gain (duty per unit error per second) */
+ 177:main.c        **** #define INT_LIM          30.0f  /* clamp for integral state (to avoid windup burst) */
+ 178:main.c        **** #define LOSS_TIMEOUT_T   0.25f  /* s without valid line before zeroing integral */
+ 179:main.c        **** 
+ 180:main.c        **** typedef struct {
+ 181:main.c        ****     float i;           /* integral state */
+ 182:main.c        ****     float u;           /* last command */
+ 183:main.c        ****     float t_loss;      /* time since last “valid” reading */
+ 184:main.c        **** } pi_t;
+ 185:main.c        **** 
+ 186:main.c        **** static inline float _clampf(float x, float lo, float hi){ return (x<lo?lo:(x>hi?hi:x)); }
+ 810              		.loc 1 186 0
+ 811              		.cfi_startproc
+ 812              		@ args = 0, pretend = 0, frame = 16
+ 813              		@ frame_needed = 1, uses_anonymous_args = 0
+ 814 0000 80B5     		push	{r7, lr}
+ 815              		.cfi_def_cfa_offset 8
+ 816              		.cfi_offset 7, -8
+ 817              		.cfi_offset 14, -4
+ 818 0002 84B0     		sub	sp, sp, #16
+ 819              		.cfi_def_cfa_offset 24
+ 820 0004 00AF     		add	r7, sp, #0
+ 821              		.cfi_def_cfa_register 7
+ 822 0006 F860     		str	r0, [r7, #12]	@ float
+ 823 0008 B960     		str	r1, [r7, #8]	@ float
+ 824 000a 7A60     		str	r2, [r7, #4]	@ float
+ 825              		.loc 1 186 0
+ 826 000c B968     		ldr	r1, [r7, #8]	@ float
+ 827 000e F868     		ldr	r0, [r7, #12]	@ float
+ 828 0010 FFF7FEFF 		bl	__aeabi_fcmplt
+ 829 0014 0346     		mov	r3, r0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 19
+
+
+ 830 0016 002B     		cmp	r3, #0
+ 831 0018 01D0     		beq	.L71
+ 832              		.loc 1 186 0 is_stmt 0 discriminator 1
+ 833 001a BB68     		ldr	r3, [r7, #8]	@ float
+ 834 001c 09E0     		b	.L68
+ 835              	.L71:
+ 836              		.loc 1 186 0 discriminator 2
+ 837 001e 7968     		ldr	r1, [r7, #4]	@ float
+ 838 0020 F868     		ldr	r0, [r7, #12]	@ float
+ 839 0022 FFF7FEFF 		bl	__aeabi_fcmpgt
+ 840 0026 0346     		mov	r3, r0
+ 841 0028 002B     		cmp	r3, #0
+ 842 002a 01D0     		beq	.L72
+ 843              		.loc 1 186 0 discriminator 4
+ 844 002c 7B68     		ldr	r3, [r7, #4]	@ float
+ 845 002e 00E0     		b	.L68
+ 846              	.L72:
+ 847              		.loc 1 186 0 discriminator 5
+ 848 0030 FB68     		ldr	r3, [r7, #12]	@ float
+ 849              	.L68:
+ 850              		.loc 1 186 0 discriminator 9
+ 851 0032 1846     		mov	r0, r3
+ 852 0034 1037     		adds	r7, r7, #16
+ 853              		.cfi_def_cfa_offset 8
+ 854 0036 BD46     		mov	sp, r7
+ 855              		.cfi_def_cfa_register 13
+ 856              		@ sp needed
+ 857 0038 80BD     		pop	{r7, pc}
+ 858              		.cfi_endproc
+ 859              	.LFE67:
+ 860              		.size	_clampf, .-_clampf
+ 861              		.global	__aeabi_fadd
+ 862              		.global	__aeabi_fmul
+ 863              		.global	__aeabi_fsub
+ 864              		.global	__aeabi_fcmpge
+ 865              		.global	__aeabi_f2iz
+ 866              		.global	__aeabi_fcmple
+ 867 003a 00BF     		.section	.text.pi_step,"ax",%progbits
+ 868              		.align	2
+ 869              		.thumb
+ 870              		.thumb_func
+ 871              		.type	pi_step, %function
+ 872              	pi_step:
+ 873              	.LFB68:
+ 187:main.c        **** 
+ 188:main.c        **** /* returns steer command in duty% (±) */
+ 189:main.c        **** static int pi_step(pi_t* pi, uint16_t V4_pp, uint16_t V5_pp, uint16_t V6_pp)
+ 190:main.c        **** {
+ 874              		.loc 1 190 0 is_stmt 1
+ 875              		.cfi_startproc
+ 876              		@ args = 0, pretend = 0, frame = 64
+ 877              		@ frame_needed = 1, uses_anonymous_args = 0
+ 878 0000 90B5     		push	{r4, r7, lr}
+ 879              		.cfi_def_cfa_offset 12
+ 880              		.cfi_offset 4, -12
+ 881              		.cfi_offset 7, -8
+ 882              		.cfi_offset 14, -4
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 20
+
+
+ 883 0002 91B0     		sub	sp, sp, #68
+ 884              		.cfi_def_cfa_offset 80
+ 885 0004 00AF     		add	r7, sp, #0
+ 886              		.cfi_def_cfa_register 7
+ 887 0006 F860     		str	r0, [r7, #12]
+ 888 0008 0846     		mov	r0, r1
+ 889 000a 1146     		mov	r1, r2
+ 890 000c 1A46     		mov	r2, r3
+ 891 000e 0346     		mov	r3, r0	@ movhi
+ 892 0010 7B81     		strh	r3, [r7, #10]	@ movhi
+ 893 0012 0B46     		mov	r3, r1	@ movhi
+ 894 0014 3B81     		strh	r3, [r7, #8]	@ movhi
+ 895 0016 1346     		mov	r3, r2	@ movhi
+ 896 0018 FB80     		strh	r3, [r7, #6]	@ movhi
+ 191:main.c        ****     /* Normalize contrasts 0..1 using your S_MINC/S_MAXC band */
+ 192:main.c        ****     float c4 = norm01_from_pp(V4_pp);
+ 897              		.loc 1 192 0
+ 898 001a 7B89     		ldrh	r3, [r7, #10]
+ 899 001c 1846     		mov	r0, r3
+ 900 001e FFF7FEFF 		bl	norm01_from_pp
+ 901 0022 B863     		str	r0, [r7, #56]	@ float
+ 193:main.c        ****     float c5 = norm01_from_pp(V5_pp);
+ 902              		.loc 1 193 0
+ 903 0024 3B89     		ldrh	r3, [r7, #8]
+ 904 0026 1846     		mov	r0, r3
+ 905 0028 FFF7FEFF 		bl	norm01_from_pp
+ 906 002c 7863     		str	r0, [r7, #52]	@ float
+ 194:main.c        ****     float c6 = norm01_from_pp(V6_pp);
+ 907              		.loc 1 194 0
+ 908 002e FB88     		ldrh	r3, [r7, #6]
+ 909 0030 1846     		mov	r0, r3
+ 910 0032 FFF7FEFF 		bl	norm01_from_pp
+ 911 0036 3863     		str	r0, [r7, #48]	@ float
+ 195:main.c        **** 
+ 196:main.c        ****     /* If all nearly zero, line is “lost” */
+ 197:main.c        ****     float sum = c4 + c5 + c6;
+ 912              		.loc 1 197 0
+ 913 0038 796B     		ldr	r1, [r7, #52]	@ float
+ 914 003a B86B     		ldr	r0, [r7, #56]	@ float
+ 915 003c FFF7FEFF 		bl	__aeabi_fadd
+ 916 0040 0346     		mov	r3, r0
+ 917 0042 396B     		ldr	r1, [r7, #48]	@ float
+ 918 0044 1846     		mov	r0, r3
+ 919 0046 FFF7FEFF 		bl	__aeabi_fadd
+ 920 004a 0346     		mov	r3, r0
+ 921 004c FB62     		str	r3, [r7, #44]	@ float
+ 198:main.c        ****     bool valid = (sum > 0.08f);  /* small epsilon */
+ 922              		.loc 1 198 0
+ 923 004e 0123     		movs	r3, #1
+ 924 0050 1C46     		mov	r4, r3
+ 925 0052 7A49     		ldr	r1, .L93
+ 926 0054 F86A     		ldr	r0, [r7, #44]	@ float
+ 927 0056 FFF7FEFF 		bl	__aeabi_fcmpgt
+ 928 005a 0346     		mov	r3, r0
+ 929 005c 002B     		cmp	r3, #0
+ 930 005e 01D1     		bne	.L74
+ 931 0060 0023     		movs	r3, #0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 21
+
+
+ 932 0062 1C46     		mov	r4, r3
+ 933              	.L74:
+ 934 0064 87F82B40 		strb	r4, [r7, #43]
+ 199:main.c        **** 
+ 200:main.c        ****     /* Weighted position: left=-1, center=0, right=+1 */
+ 201:main.c        ****     float pos = 0.0f;
+ 935              		.loc 1 201 0
+ 936 0068 4FF00003 		mov	r3, #0
+ 937 006c FB63     		str	r3, [r7, #60]	@ float
+ 202:main.c        ****     if (valid) pos = (-1.0f * c4 + 0.0f * c5 + 1.0f * c6) / sum;
+ 938              		.loc 1 202 0
+ 939 006e 97F82B30 		ldrb	r3, [r7, #43]	@ zero_extendqisi2
+ 940 0072 002B     		cmp	r3, #0
+ 941 0074 15D0     		beq	.L75
+ 942              		.loc 1 202 0 is_stmt 0 discriminator 1
+ 943 0076 4FF00001 		mov	r1, #0
+ 944 007a 786B     		ldr	r0, [r7, #52]	@ float
+ 945 007c FFF7FEFF 		bl	__aeabi_fmul
+ 946 0080 0346     		mov	r3, r0
+ 947 0082 B96B     		ldr	r1, [r7, #56]	@ float
+ 948 0084 1846     		mov	r0, r3
+ 949 0086 FFF7FEFF 		bl	__aeabi_fsub
+ 950 008a 0346     		mov	r3, r0
+ 951 008c 396B     		ldr	r1, [r7, #48]	@ float
+ 952 008e 1846     		mov	r0, r3
+ 953 0090 FFF7FEFF 		bl	__aeabi_fadd
+ 954 0094 0346     		mov	r3, r0
+ 955 0096 F96A     		ldr	r1, [r7, #44]	@ float
+ 956 0098 1846     		mov	r0, r3
+ 957 009a FFF7FEFF 		bl	__aeabi_fdiv
+ 958 009e 0346     		mov	r3, r0
+ 959 00a0 FB63     		str	r3, [r7, #60]	@ float
+ 960              	.L75:
+ 203:main.c        **** 
+ 204:main.c        ****     /* Error: positive means line is to the right → steer right (speed up right wheel) */
+ 205:main.c        ****     float e = pos;
+ 961              		.loc 1 205 0 is_stmt 1
+ 962 00a2 FB6B     		ldr	r3, [r7, #60]	@ float
+ 963 00a4 7B62     		str	r3, [r7, #36]	@ float
+ 206:main.c        **** 
+ 207:main.c        ****     /* Loss handling: if invalid for a short time, keep last u; after timeout, decay integral */
+ 208:main.c        ****     if (!valid) {
+ 964              		.loc 1 208 0
+ 965 00a6 97F82B30 		ldrb	r3, [r7, #43]
+ 966 00aa 83F00103 		eor	r3, r3, #1
+ 967 00ae DBB2     		uxtb	r3, r3
+ 968 00b0 002B     		cmp	r3, #0
+ 969 00b2 2CD0     		beq	.L76
+ 209:main.c        ****         pi->t_loss += DT_S;
+ 970              		.loc 1 209 0
+ 971 00b4 FB68     		ldr	r3, [r7, #12]
+ 972 00b6 9B68     		ldr	r3, [r3, #8]	@ float
+ 973 00b8 6149     		ldr	r1, .L93+4
+ 974 00ba 1846     		mov	r0, r3
+ 975 00bc FFF7FEFF 		bl	__aeabi_fadd
+ 976 00c0 0346     		mov	r3, r0
+ 977 00c2 1A46     		mov	r2, r3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 22
+
+
+ 978 00c4 FB68     		ldr	r3, [r7, #12]
+ 979 00c6 9A60     		str	r2, [r3, #8]	@ float
+ 210:main.c        ****         if (pi->t_loss >= LOSS_TIMEOUT_T) {
+ 980              		.loc 1 210 0
+ 981 00c8 FB68     		ldr	r3, [r7, #12]
+ 982 00ca 9B68     		ldr	r3, [r3, #8]	@ float
+ 983 00cc 4FF07A51 		mov	r1, #1048576000
+ 984 00d0 1846     		mov	r0, r3
+ 985 00d2 FFF7FEFF 		bl	__aeabi_fcmpge
+ 986 00d6 0346     		mov	r3, r0
+ 987 00d8 002B     		cmp	r3, #0
+ 988 00da 0BD0     		beq	.L77
+ 989              	.LBB2:
+ 211:main.c        ****             /* gently bleed the integrator to zero when lost for a while */
+ 212:main.c        ****             const float bleed = 0.92f;
+ 990              		.loc 1 212 0
+ 991 00dc 594B     		ldr	r3, .L93+8
+ 992 00de 3B62     		str	r3, [r7, #32]	@ float
+ 213:main.c        ****             pi->i *= bleed;
+ 993              		.loc 1 213 0
+ 994 00e0 FB68     		ldr	r3, [r7, #12]
+ 995 00e2 1B68     		ldr	r3, [r3]	@ float
+ 996 00e4 396A     		ldr	r1, [r7, #32]	@ float
+ 997 00e6 1846     		mov	r0, r3
+ 998 00e8 FFF7FEFF 		bl	__aeabi_fmul
+ 999 00ec 0346     		mov	r3, r0
+ 1000 00ee 1A46     		mov	r2, r3
+ 1001 00f0 FB68     		ldr	r3, [r7, #12]
+ 1002 00f2 1A60     		str	r2, [r3]	@ float
+ 1003              	.L77:
+ 1004              	.LBE2:
+ 214:main.c        ****         }
+ 215:main.c        ****         /* hold last u (don’t integrate) */
+ 216:main.c        ****         return (int)_clampf(pi->u, -STEER_MAX, STEER_MAX);
+ 1005              		.loc 1 216 0
+ 1006 00f4 FB68     		ldr	r3, [r7, #12]
+ 1007 00f6 5B68     		ldr	r3, [r3, #4]	@ float
+ 1008 00f8 534A     		ldr	r2, .L93+12
+ 1009 00fa 5449     		ldr	r1, .L93+16
+ 1010 00fc 1846     		mov	r0, r3
+ 1011 00fe FFF7FEFF 		bl	_clampf
+ 1012 0102 0346     		mov	r3, r0
+ 1013 0104 1846     		mov	r0, r3
+ 1014 0106 FFF7FEFF 		bl	__aeabi_f2iz
+ 1015 010a 0346     		mov	r3, r0
+ 1016 010c 92E0     		b	.L79
+ 1017              	.L76:
+ 217:main.c        ****     }
+ 218:main.c        ****     pi->t_loss = 0.0f;
+ 1018              		.loc 1 218 0
+ 1019 010e FB68     		ldr	r3, [r7, #12]
+ 1020 0110 4FF00002 		mov	r2, #0
+ 1021 0114 9A60     		str	r2, [r3, #8]	@ float
+ 219:main.c        **** 
+ 220:main.c        ****     /* Integrate with clamp */
+ 221:main.c        ****     float i_next = pi->i + e * DT_S;
+ 1022              		.loc 1 221 0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 23
+
+
+ 1023 0116 FB68     		ldr	r3, [r7, #12]
+ 1024 0118 1C68     		ldr	r4, [r3]	@ float
+ 1025 011a 4949     		ldr	r1, .L93+4
+ 1026 011c 786A     		ldr	r0, [r7, #36]	@ float
+ 1027 011e FFF7FEFF 		bl	__aeabi_fmul
+ 1028 0122 0346     		mov	r3, r0
+ 1029 0124 1946     		mov	r1, r3
+ 1030 0126 2046     		mov	r0, r4
+ 1031 0128 FFF7FEFF 		bl	__aeabi_fadd
+ 1032 012c 0346     		mov	r3, r0
+ 1033 012e FB61     		str	r3, [r7, #28]	@ float
+ 222:main.c        ****     i_next = _clampf(i_next, -INT_LIM, +INT_LIM);
+ 1034              		.loc 1 222 0
+ 1035 0130 474A     		ldr	r2, .L93+20
+ 1036 0132 4849     		ldr	r1, .L93+24
+ 1037 0134 F869     		ldr	r0, [r7, #28]	@ float
+ 1038 0136 FFF7FEFF 		bl	_clampf
+ 1039 013a F861     		str	r0, [r7, #28]	@ float
+ 223:main.c        **** 
+ 224:main.c        ****     /* Raw (unclamped) output */
+ 225:main.c        ****     float u_raw = KP * e + KI * i_next;
+ 1040              		.loc 1 225 0
+ 1041 013c 4649     		ldr	r1, .L93+28
+ 1042 013e 786A     		ldr	r0, [r7, #36]	@ float
+ 1043 0140 FFF7FEFF 		bl	__aeabi_fmul
+ 1044 0144 0346     		mov	r3, r0
+ 1045 0146 1C46     		mov	r4, r3
+ 1046 0148 FB69     		ldr	r3, [r7, #28]	@ float
+ 1047 014a 1946     		mov	r1, r3
+ 1048 014c 1846     		mov	r0, r3
+ 1049 014e FFF7FEFF 		bl	__aeabi_fadd
+ 1050 0152 0346     		mov	r3, r0
+ 1051 0154 1946     		mov	r1, r3
+ 1052 0156 2046     		mov	r0, r4
+ 1053 0158 FFF7FEFF 		bl	__aeabi_fadd
+ 1054 015c 0346     		mov	r3, r0
+ 1055 015e BB61     		str	r3, [r7, #24]	@ float
+ 226:main.c        **** 
+ 227:main.c        ****     /* Clamp output, and do simple conditional anti-windup:
+ 228:main.c        ****        only accept the new integral if we are not saturating “against” the error */
+ 229:main.c        ****     float u = _clampf(u_raw, -((float)STEER_MAX), +((float)STEER_MAX));
+ 1056              		.loc 1 229 0
+ 1057 0160 394A     		ldr	r2, .L93+12
+ 1058 0162 3A49     		ldr	r1, .L93+16
+ 1059 0164 B869     		ldr	r0, [r7, #24]	@ float
+ 1060 0166 FFF7FEFF 		bl	_clampf
+ 1061 016a 7861     		str	r0, [r7, #20]	@ float
+ 230:main.c        **** 
+ 231:main.c        ****     bool sat_hi = (u >=  (float)STEER_MAX - 1e-3f);
+ 1062              		.loc 1 231 0
+ 1063 016c 0123     		movs	r3, #1
+ 1064 016e 1C46     		mov	r4, r3
+ 1065 0170 3A49     		ldr	r1, .L93+32
+ 1066 0172 7869     		ldr	r0, [r7, #20]	@ float
+ 1067 0174 FFF7FEFF 		bl	__aeabi_fcmpge
+ 1068 0178 0346     		mov	r3, r0
+ 1069 017a 002B     		cmp	r3, #0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 24
+
+
+ 1070 017c 01D1     		bne	.L80
+ 1071 017e 0023     		movs	r3, #0
+ 1072 0180 1C46     		mov	r4, r3
+ 1073              	.L80:
+ 1074 0182 FC74     		strb	r4, [r7, #19]
+ 232:main.c        ****     bool sat_lo = (u <= -(float)STEER_MAX + 1e-3f);
+ 1075              		.loc 1 232 0
+ 1076 0184 0123     		movs	r3, #1
+ 1077 0186 1C46     		mov	r4, r3
+ 1078 0188 3549     		ldr	r1, .L93+36
+ 1079 018a 7869     		ldr	r0, [r7, #20]	@ float
+ 1080 018c FFF7FEFF 		bl	__aeabi_fcmple
+ 1081 0190 0346     		mov	r3, r0
+ 1082 0192 002B     		cmp	r3, #0
+ 1083 0194 01D1     		bne	.L81
+ 1084 0196 0023     		movs	r3, #0
+ 1085 0198 1C46     		mov	r4, r3
+ 1086              	.L81:
+ 1087 019a BC74     		strb	r4, [r7, #18]
+ 233:main.c        **** 
+ 234:main.c        ****     /* If saturated and the new integral would push further into saturation, don’t commit it */
+ 235:main.c        ****     if ( (sat_hi && (KI * i_next > KI * pi->i)) ||
+ 1088              		.loc 1 235 0
+ 1089 019c FB7C     		ldrb	r3, [r7, #19]	@ zero_extendqisi2
+ 1090 019e 002B     		cmp	r3, #0
+ 1091 01a0 14D0     		beq	.L82
+ 1092              		.loc 1 235 0 is_stmt 0 discriminator 1
+ 1093 01a2 FB69     		ldr	r3, [r7, #28]	@ float
+ 1094 01a4 1946     		mov	r1, r3
+ 1095 01a6 1846     		mov	r0, r3
+ 1096 01a8 FFF7FEFF 		bl	__aeabi_fadd
+ 1097 01ac 0346     		mov	r3, r0
+ 1098 01ae 1C46     		mov	r4, r3
+ 1099 01b0 FB68     		ldr	r3, [r7, #12]
+ 1100 01b2 1B68     		ldr	r3, [r3]	@ float
+ 1101 01b4 1946     		mov	r1, r3
+ 1102 01b6 1846     		mov	r0, r3
+ 1103 01b8 FFF7FEFF 		bl	__aeabi_fadd
+ 1104 01bc 0346     		mov	r3, r0
+ 1105 01be 1946     		mov	r1, r3
+ 1106 01c0 2046     		mov	r0, r4
+ 1107 01c2 FFF7FEFF 		bl	__aeabi_fcmpgt
+ 1108 01c6 0346     		mov	r3, r0
+ 1109 01c8 002B     		cmp	r3, #0
+ 1110 01ca 1AD1     		bne	.L84
+ 1111              	.L82:
+ 1112              		.loc 1 235 0 discriminator 3
+ 1113 01cc BB7C     		ldrb	r3, [r7, #18]	@ zero_extendqisi2
+ 1114 01ce 002B     		cmp	r3, #0
+ 1115 01d0 14D0     		beq	.L85
+ 236:main.c        ****          (sat_lo && (KI * i_next < KI * pi->i)) ) {
+ 1116              		.loc 1 236 0 is_stmt 1
+ 1117 01d2 FB69     		ldr	r3, [r7, #28]	@ float
+ 1118 01d4 1946     		mov	r1, r3
+ 1119 01d6 1846     		mov	r0, r3
+ 1120 01d8 FFF7FEFF 		bl	__aeabi_fadd
+ 1121 01dc 0346     		mov	r3, r0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 25
+
+
+ 1122 01de 1C46     		mov	r4, r3
+ 1123 01e0 FB68     		ldr	r3, [r7, #12]
+ 1124 01e2 1B68     		ldr	r3, [r3]	@ float
+ 1125 01e4 1946     		mov	r1, r3
+ 1126 01e6 1846     		mov	r0, r3
+ 1127 01e8 FFF7FEFF 		bl	__aeabi_fadd
+ 1128 01ec 0346     		mov	r3, r0
+ 1129 01ee 1946     		mov	r1, r3
+ 1130 01f0 2046     		mov	r0, r4
+ 1131 01f2 FFF7FEFF 		bl	__aeabi_fcmplt
+ 1132 01f6 0346     		mov	r3, r0
+ 1133 01f8 002B     		cmp	r3, #0
+ 1134 01fa 02D1     		bne	.L84
+ 1135              	.L85:
+ 237:main.c        ****         /* keep previous integral */
+ 238:main.c        ****     } else {
+ 239:main.c        ****         pi->i = i_next;
+ 1136              		.loc 1 239 0
+ 1137 01fc FB68     		ldr	r3, [r7, #12]
+ 1138 01fe FA69     		ldr	r2, [r7, #28]	@ float
+ 1139 0200 1A60     		str	r2, [r3]	@ float
+ 1140              	.L84:
+ 240:main.c        ****     }
+ 241:main.c        **** 
+ 242:main.c        ****     pi->u = u;
+ 1141              		.loc 1 242 0
+ 1142 0202 FB68     		ldr	r3, [r7, #12]
+ 1143 0204 7A69     		ldr	r2, [r7, #20]	@ float
+ 1144 0206 5A60     		str	r2, [r3, #4]	@ float
+ 243:main.c        ****     return (int)(u + (u>=0?0.5f:-0.5f));  /* round to int */
+ 1145              		.loc 1 243 0
+ 1146 0208 4FF00001 		mov	r1, #0
+ 1147 020c 7869     		ldr	r0, [r7, #20]	@ float
+ 1148 020e FFF7FEFF 		bl	__aeabi_fcmpge
+ 1149 0212 0346     		mov	r3, r0
+ 1150 0214 002B     		cmp	r3, #0
+ 1151 0216 02D0     		beq	.L92
+ 1152              		.loc 1 243 0 is_stmt 0 discriminator 1
+ 1153 0218 4FF07C53 		mov	r3, #1056964608
+ 1154 021c 01E0     		b	.L89
+ 1155              	.L92:
+ 1156              		.loc 1 243 0 discriminator 2
+ 1157 021e 4FF03F43 		mov	r3, #-1090519040
+ 1158              	.L89:
+ 1159              		.loc 1 243 0 discriminator 4
+ 1160 0222 7969     		ldr	r1, [r7, #20]	@ float
+ 1161 0224 1846     		mov	r0, r3
+ 1162 0226 FFF7FEFF 		bl	__aeabi_fadd
+ 1163 022a 0346     		mov	r3, r0
+ 1164 022c 1846     		mov	r0, r3
+ 1165 022e FFF7FEFF 		bl	__aeabi_f2iz
+ 1166 0232 0346     		mov	r3, r0
+ 1167              	.L79:
+ 244:main.c        **** }
+ 1168              		.loc 1 244 0 is_stmt 1
+ 1169 0234 1846     		mov	r0, r3
+ 1170 0236 4437     		adds	r7, r7, #68
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 26
+
+
+ 1171              		.cfi_def_cfa_offset 12
+ 1172 0238 BD46     		mov	sp, r7
+ 1173              		.cfi_def_cfa_register 13
+ 1174              		@ sp needed
+ 1175 023a 90BD     		pop	{r4, r7, pc}
+ 1176              	.L94:
+ 1177              		.align	2
+ 1178              	.L93:
+ 1179 023c 0AD7A33D 		.word	1034147594
+ 1180 0240 6F12033C 		.word	1006834287
+ 1181 0244 1F856B3F 		.word	1064011039
+ 1182 0248 00009041 		.word	1099956224
+ 1183 024c 000090C1 		.word	-1047527424
+ 1184 0250 0000F041 		.word	1106247680
+ 1185 0254 0000F0C1 		.word	-1041235968
+ 1186 0258 00006041 		.word	1096810496
+ 1187 025c F4FD8F41 		.word	1099955700
+ 1188 0260 F4FD8FC1 		.word	-1047527948
+ 1189              		.cfi_endproc
+ 1190              	.LFE68:
+ 1191              		.size	pi_step, .-pi_step
+ 1192              		.section	.text.main,"ax",%progbits
+ 1193              		.align	2
+ 1194              		.global	main
+ 1195              		.thumb
+ 1196              		.thumb_func
+ 1197              		.type	main, %function
+ 1198              	main:
+ 1199              	.LFB69:
+ 245:main.c        **** 
+ 246:main.c        **** int main(void)
+ 247:main.c        **** {
+ 1200              		.loc 1 247 0
+ 1201              		.cfi_startproc
+ 1202              		@ args = 0, pretend = 0, frame = 32
+ 1203              		@ frame_needed = 1, uses_anonymous_args = 0
+ 1204 0000 80B5     		push	{r7, lr}
+ 1205              		.cfi_def_cfa_offset 8
+ 1206              		.cfi_offset 7, -8
+ 1207              		.cfi_offset 14, -4
+ 1208 0002 88B0     		sub	sp, sp, #32
+ 1209              		.cfi_def_cfa_offset 40
+ 1210 0004 00AF     		add	r7, sp, #0
+ 1211              		.cfi_def_cfa_register 7
+ 248:main.c        ****     CyGlobalIntEnable;
+ 1212              		.loc 1 248 0
+ 1213              		.syntax unified
+ 1214              	@ 248 "main.c" 1
+ 1215 0006 62B6     		CPSIE   i
+ 1216              	@ 0 "" 2
+ 249:main.c        **** 
+ 250:main.c        ****     /* ADC for sensors */
+ 251:main.c        ****     ADC_Start();
+ 1217              		.loc 1 251 0
+ 1218              		.thumb
+ 1219              		.syntax unified
+ 1220 0008 FFF7FEFF 		bl	ADC_Start
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 27
+
+
+ 252:main.c        **** 
+ 253:main.c        ****     /* Encoders + 5 ms tick (distance only) */
+ 254:main.c        ****     Clock_QENC_Start();
+ 1221              		.loc 1 254 0
+ 1222 000c FFF7FEFF 		bl	Clock_QENC_Start
+ 255:main.c        ****     QuadDec_M1_Start(); QuadDec_M2_Start();
+ 1223              		.loc 1 255 0
+ 1224 0010 FFF7FEFF 		bl	QuadDec_M1_Start
+ 1225 0014 FFF7FEFF 		bl	QuadDec_M2_Start
+ 256:main.c        ****     QuadDec_M1_SetCounter(0); QuadDec_M2_SetCounter(0);
+ 1226              		.loc 1 256 0
+ 1227 0018 0020     		movs	r0, #0
+ 1228 001a FFF7FEFF 		bl	QuadDec_M1_SetCounter
+ 1229 001e 0020     		movs	r0, #0
+ 1230 0020 FFF7FEFF 		bl	QuadDec_M2_SetCounter
+ 257:main.c        ****     Clock_QD_Start();
+ 1231              		.loc 1 257 0
+ 1232 0024 FFF7FEFF 		bl	Clock_QD_Start
+ 258:main.c        ****     Timer_QD_Start();                  // 5 ms period in TopDesign
+ 1233              		.loc 1 258 0
+ 1234 0028 FFF7FEFF 		bl	Timer_QD_Start
+ 259:main.c        ****     isr_qd_StartEx(isr_qd_Handler);
+ 1235              		.loc 1 259 0
+ 1236 002c 4248     		ldr	r0, .L106
+ 1237 002e FFF7FEFF 		bl	isr_qd_StartEx
+ 260:main.c        **** 
+ 261:main.c        ****     /* PWM & motor driver */
+ 262:main.c        ****     Clock_PWM_Start();
+ 1238              		.loc 1 262 0
+ 1239 0032 FFF7FEFF 		bl	Clock_PWM_Start
+ 263:main.c        ****     PWM_1_Start(); PWM_2_Start();
+ 1240              		.loc 1 263 0
+ 1241 0036 FFF7FEFF 		bl	PWM_1_Start
+ 1242 003a FFF7FEFF 		bl	PWM_2_Start
+ 264:main.c        ****     PWM_1_WritePeriod(PWM_PERIOD);
+ 1243              		.loc 1 264 0
+ 1244 003e C820     		movs	r0, #200
+ 1245 0040 FFF7FEFF 		bl	PWM_1_WritePeriod
+ 265:main.c        ****     PWM_2_WritePeriod(PWM_PERIOD);
+ 1246              		.loc 1 265 0
+ 1247 0044 C820     		movs	r0, #200
+ 1248 0046 FFF7FEFF 		bl	PWM_2_WritePeriod
+ 266:main.c        ****     motor_enable(0u, 0u);
+ 1249              		.loc 1 266 0
+ 1250 004a 0021     		movs	r1, #0
+ 1251 004c 0020     		movs	r0, #0
+ 1252 004e FFF7FEFF 		bl	motor_enable
+ 267:main.c        ****     set_motors_symmetric(0);
+ 1253              		.loc 1 267 0
+ 1254 0052 0020     		movs	r0, #0
+ 1255 0054 FFF7FEFF 		bl	set_motors_symmetric
+ 268:main.c        **** 
+ 269:main.c        ****     /* Directions module (for your blocking pivots) */
+ 270:main.c        ****     Directions_Init();
+ 1256              		.loc 1 270 0
+ 1257 0058 FFF7FEFF 		bl	Directions_Init
+ 271:main.c        ****     g_direction = 0u;
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 28
+
+
+ 1258              		.loc 1 271 0
+ 1259 005c 374B     		ldr	r3, .L106+4
+ 1260 005e 0022     		movs	r2, #0
+ 1261 0060 1A70     		strb	r2, [r3]
+ 272:main.c        **** 
+ 273:main.c        ****     /* Feed-forward cruise duty (kept) */
+ 274:main.c        ****     int center_duty_est = (int)((V_CRUISE_MM_S * 100) / VMAX_CONST_MM_S);
+ 1262              		.loc 1 274 0
+ 1263 0062 1923     		movs	r3, #25
+ 1264 0064 FB61     		str	r3, [r7, #28]
+ 275:main.c        ****     if (center_duty_est < 0) center_duty_est = 0;
+ 1265              		.loc 1 275 0
+ 1266 0066 FB69     		ldr	r3, [r7, #28]
+ 1267 0068 002B     		cmp	r3, #0
+ 1268 006a 01DA     		bge	.L96
+ 1269              		.loc 1 275 0 is_stmt 0 discriminator 1
+ 1270 006c 0023     		movs	r3, #0
+ 1271 006e FB61     		str	r3, [r7, #28]
+ 1272              	.L96:
+ 276:main.c        ****     if (center_duty_est > 100) center_duty_est = 100;
+ 1273              		.loc 1 276 0 is_stmt 1
+ 1274 0070 FB69     		ldr	r3, [r7, #28]
+ 1275 0072 642B     		cmp	r3, #100
+ 1276 0074 01DD     		ble	.L97
+ 1277              		.loc 1 276 0 is_stmt 0 discriminator 1
+ 1278 0076 6423     		movs	r3, #100
+ 1279 0078 FB61     		str	r3, [r7, #28]
+ 1280              	.L97:
+ 277:main.c        **** 
+ 278:main.c        ****     /* PI state */
+ 279:main.c        ****     pi_t pi = { .i = 0.0f, .u = 0.0f, .t_loss = 0.0f };
+ 1281              		.loc 1 279 0 is_stmt 1
+ 1282 007a 4FF00003 		mov	r3, #0
+ 1283 007e FB60     		str	r3, [r7, #12]	@ float
+ 1284 0080 4FF00003 		mov	r3, #0
+ 1285 0084 3B61     		str	r3, [r7, #16]	@ float
+ 1286 0086 4FF00003 		mov	r3, #0
+ 1287 008a 7B61     		str	r3, [r7, #20]	@ float
+ 1288              	.L105:
+ 1289              	.LBB3:
+ 280:main.c        **** 
+ 281:main.c        ****     for(;;){
+ 282:main.c        ****         /* Distance stop */
+ 283:main.c        ****         g_stop_now = (g_dist_mm >= TARGET_DIST_MM) ? 1u : 0u;
+ 1290              		.loc 1 283 0
+ 1291 008c 2C4B     		ldr	r3, .L106+8
+ 1292 008e 1B68     		ldr	r3, [r3]
+ 1293 0090 44F61F62 		movw	r2, #19999
+ 1294 0094 9342     		cmp	r3, r2
+ 1295 0096 01DD     		ble	.L98
+ 1296              		.loc 1 283 0 is_stmt 0 discriminator 1
+ 1297 0098 0122     		movs	r2, #1
+ 1298 009a 00E0     		b	.L99
+ 1299              	.L98:
+ 1300              		.loc 1 283 0 discriminator 2
+ 1301 009c 0022     		movs	r2, #0
+ 1302              	.L99:
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 29
+
+
+ 1303              		.loc 1 283 0 discriminator 4
+ 1304 009e 294B     		ldr	r3, .L106+12
+ 1305 00a0 1A70     		strb	r2, [r3]
+ 284:main.c        ****         if (g_stop_now) {
+ 1306              		.loc 1 284 0 is_stmt 1 discriminator 4
+ 1307 00a2 284B     		ldr	r3, .L106+12
+ 1308 00a4 1B78     		ldrb	r3, [r3]
+ 1309 00a6 DBB2     		uxtb	r3, r3
+ 1310 00a8 002B     		cmp	r3, #0
+ 1311 00aa 0DD0     		beq	.L100
+ 285:main.c        ****             set_motors_symmetric(0);
+ 1312              		.loc 1 285 0
+ 1313 00ac 0020     		movs	r0, #0
+ 1314 00ae FFF7FEFF 		bl	set_motors_symmetric
+ 286:main.c        ****             motor_enable(1u, 1u);
+ 1315              		.loc 1 286 0
+ 1316 00b2 0121     		movs	r1, #1
+ 1317 00b4 0120     		movs	r0, #1
+ 1318 00b6 FFF7FEFF 		bl	motor_enable
+ 287:main.c        ****             g_direction = 0u;
+ 1319              		.loc 1 287 0
+ 1320 00ba 204B     		ldr	r3, .L106+4
+ 1321 00bc 0022     		movs	r2, #0
+ 1322 00be 1A70     		strb	r2, [r3]
+ 288:main.c        ****             CyDelay(LOOP_DT_MS);
+ 1323              		.loc 1 288 0
+ 1324 00c0 0820     		movs	r0, #8
+ 1325 00c2 FFF7FEFF 		bl	CyDelay
+ 289:main.c        ****             continue;
+ 1326              		.loc 1 289 0
+ 1327 00c6 36E0     		b	.L104
+ 1328              	.L100:
+ 290:main.c        ****         }
+ 291:main.c        **** 
+ 292:main.c        ****         /* Read sensors + maybe request turn */
+ 293:main.c        ****         uint16_t V4_pp=0, V5_pp=0, V6_pp=0;
+ 1329              		.loc 1 293 0
+ 1330 00c8 0023     		movs	r3, #0
+ 1331 00ca 7B81     		strh	r3, [r7, #10]	@ movhi
+ 1332 00cc 0023     		movs	r3, #0
+ 1333 00ce 3B81     		strh	r3, [r7, #8]	@ movhi
+ 1334 00d0 0023     		movs	r3, #0
+ 1335 00d2 FB80     		strh	r3, [r7, #6]	@ movhi
+ 294:main.c        ****         light_sensors_update_and_maybe_request_turn(&V4_pp, &V5_pp, &V6_pp);
+ 1336              		.loc 1 294 0
+ 1337 00d4 BA1D     		adds	r2, r7, #6
+ 1338 00d6 07F10801 		add	r1, r7, #8
+ 1339 00da 07F10A03 		add	r3, r7, #10
+ 1340 00de 1846     		mov	r0, r3
+ 1341 00e0 FFF7FEFF 		bl	light_sensors_update_and_maybe_request_turn
+ 295:main.c        **** 
+ 296:main.c        ****         /* Handle a requested pivot (unchanged) */
+ 297:main.c        ****         if (g_direction == 1u || g_direction == 2u){
+ 1342              		.loc 1 297 0
+ 1343 00e4 154B     		ldr	r3, .L106+4
+ 1344 00e6 1B78     		ldrb	r3, [r3]
+ 1345 00e8 DBB2     		uxtb	r3, r3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 30
+
+
+ 1346 00ea 012B     		cmp	r3, #1
+ 1347 00ec 04D0     		beq	.L102
+ 1348              		.loc 1 297 0 is_stmt 0 discriminator 1
+ 1349 00ee 134B     		ldr	r3, .L106+4
+ 1350 00f0 1B78     		ldrb	r3, [r3]
+ 1351 00f2 DBB2     		uxtb	r3, r3
+ 1352 00f4 022B     		cmp	r3, #2
+ 1353 00f6 0FD1     		bne	.L103
+ 1354              	.L102:
+ 298:main.c        ****             Directions_Handle(&g_direction);
+ 1355              		.loc 1 298 0 is_stmt 1
+ 1356 00f8 1048     		ldr	r0, .L106+4
+ 1357 00fa FFF7FEFF 		bl	Directions_Handle
+ 299:main.c        ****             /* after a turn, reset integrator so we don’t carry a bias */
+ 300:main.c        ****             pi.i = 0.0f; pi.u = 0.0f; pi.t_loss = 0.0f;
+ 1358              		.loc 1 300 0
+ 1359 00fe 4FF00003 		mov	r3, #0
+ 1360 0102 FB60     		str	r3, [r7, #12]	@ float
+ 1361 0104 4FF00003 		mov	r3, #0
+ 1362 0108 3B61     		str	r3, [r7, #16]	@ float
+ 1363 010a 4FF00003 		mov	r3, #0
+ 1364 010e 7B61     		str	r3, [r7, #20]	@ float
+ 301:main.c        ****             CyDelay(LOOP_DT_MS);
+ 1365              		.loc 1 301 0
+ 1366 0110 0820     		movs	r0, #8
+ 1367 0112 FFF7FEFF 		bl	CyDelay
+ 302:main.c        ****             continue;
+ 1368              		.loc 1 302 0
+ 1369 0116 0EE0     		b	.L104
+ 1370              	.L103:
+ 303:main.c        ****         }
+ 304:main.c        **** 
+ 305:main.c        ****         /* Straight run with PI steering */
+ 306:main.c        ****         int steer = pi_step(&pi, V4_pp, V5_pp, V6_pp);
+ 1371              		.loc 1 306 0
+ 1372 0118 7989     		ldrh	r1, [r7, #10]
+ 1373 011a 3A89     		ldrh	r2, [r7, #8]
+ 1374 011c FB88     		ldrh	r3, [r7, #6]
+ 1375 011e 07F10C00 		add	r0, r7, #12
+ 1376 0122 FFF7FEFF 		bl	pi_step
+ 1377 0126 B861     		str	r0, [r7, #24]
+ 307:main.c        ****         set_motors_with_trim_and_steer(center_duty_est, steer);
+ 1378              		.loc 1 307 0
+ 1379 0128 B969     		ldr	r1, [r7, #24]
+ 1380 012a F869     		ldr	r0, [r7, #28]
+ 1381 012c FFF7FEFF 		bl	set_motors_with_trim_and_steer
+ 308:main.c        **** 
+ 309:main.c        ****         CyDelay(LOOP_DT_MS);
+ 1382              		.loc 1 309 0
+ 1383 0130 0820     		movs	r0, #8
+ 1384 0132 FFF7FEFF 		bl	CyDelay
+ 1385              	.L104:
+ 1386              	.LBE3:
+ 310:main.c        ****     }
+ 1387              		.loc 1 310 0 discriminator 1
+ 1388 0136 A9E7     		b	.L105
+ 1389              	.L107:
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 31
+
+
+ 1390              		.align	2
+ 1391              	.L106:
+ 1392 0138 00000000 		.word	isr_qd_Handler
+ 1393 013c 06000000 		.word	g_direction
+ 1394 0140 08000000 		.word	g_dist_mm
+ 1395 0144 07000000 		.word	g_stop_now
+ 1396              		.cfi_endproc
+ 1397              	.LFE69:
+ 1398              		.size	main, .-main
+ 1399              		.bss
+ 1400              	s1.8243:
+ 1401 000c 00       		.space	1
+ 1402              	s2.8244:
+ 1403 000d 00       		.space	1
+ 1404              	clear_cnt.8253:
+ 1405 000e 00       		.space	1
+ 1406              	armed.8252:
+ 1407 000f 00       		.space	1
+ 1408              	debL.8249:
+ 1409 0010 00       		.space	1
+ 1410              	debR.8250:
+ 1411 0011 00       		.space	1
+ 1412              	latched_any.8251:
+ 1413 0012 00       		.space	1
+ 1414              		.text
+ 1415              	.Letext0:
+ 1416              		.file 2 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 1417              		.file 3 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 1418              		.file 4 "Generated_Source\\PSoC5/core_cm3.h"
+ 1419              		.section	.debug_info,"",%progbits
+ 1420              	.Ldebug_info0:
+ 1421 0000 10060000 		.4byte	0x610
+ 1422 0004 0400     		.2byte	0x4
+ 1423 0006 00000000 		.4byte	.Ldebug_abbrev0
+ 1424 000a 04       		.byte	0x4
+ 1425 000b 01       		.uleb128 0x1
+ 1426 000c C9000000 		.4byte	.LASF70
+ 1427 0010 0C       		.byte	0xc
+ 1428 0011 52030000 		.4byte	.LASF71
+ 1429 0015 37000000 		.4byte	.LASF72
+ 1430 0019 00000000 		.4byte	.Ldebug_ranges0+0
+ 1431 001d 00000000 		.4byte	0
+ 1432 0021 00000000 		.4byte	.Ldebug_line0
+ 1433 0025 02       		.uleb128 0x2
+ 1434 0026 01       		.byte	0x1
+ 1435 0027 06       		.byte	0x6
+ 1436 0028 60020000 		.4byte	.LASF0
+ 1437 002c 03       		.uleb128 0x3
+ 1438 002d FD010000 		.4byte	.LASF3
+ 1439 0031 02       		.byte	0x2
+ 1440 0032 1D       		.byte	0x1d
+ 1441 0033 37000000 		.4byte	0x37
+ 1442 0037 02       		.uleb128 0x2
+ 1443 0038 01       		.byte	0x1
+ 1444 0039 08       		.byte	0x8
+ 1445 003a 1C020000 		.4byte	.LASF1
+ 1446 003e 02       		.uleb128 0x2
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 32
+
+
+ 1447 003f 02       		.byte	0x2
+ 1448 0040 05       		.byte	0x5
+ 1449 0041 1B000000 		.4byte	.LASF2
+ 1450 0045 03       		.uleb128 0x3
+ 1451 0046 5C010000 		.4byte	.LASF4
+ 1452 004a 02       		.byte	0x2
+ 1453 004b 2B       		.byte	0x2b
+ 1454 004c 50000000 		.4byte	0x50
+ 1455 0050 02       		.uleb128 0x2
+ 1456 0051 02       		.byte	0x2
+ 1457 0052 07       		.byte	0x7
+ 1458 0053 CD020000 		.4byte	.LASF5
+ 1459 0057 03       		.uleb128 0x3
+ 1460 0058 B0030000 		.4byte	.LASF6
+ 1461 005c 02       		.byte	0x2
+ 1462 005d 3F       		.byte	0x3f
+ 1463 005e 62000000 		.4byte	0x62
+ 1464 0062 02       		.uleb128 0x2
+ 1465 0063 04       		.byte	0x4
+ 1466 0064 05       		.byte	0x5
+ 1467 0065 CB010000 		.4byte	.LASF7
+ 1468 0069 02       		.uleb128 0x2
+ 1469 006a 04       		.byte	0x4
+ 1470 006b 07       		.byte	0x7
+ 1471 006c 59030000 		.4byte	.LASF8
+ 1472 0070 03       		.uleb128 0x3
+ 1473 0071 D4010000 		.4byte	.LASF9
+ 1474 0075 02       		.byte	0x2
+ 1475 0076 59       		.byte	0x59
+ 1476 0077 7B000000 		.4byte	0x7b
+ 1477 007b 02       		.uleb128 0x2
+ 1478 007c 08       		.byte	0x8
+ 1479 007d 05       		.byte	0x5
+ 1480 007e A8010000 		.4byte	.LASF10
+ 1481 0082 02       		.uleb128 0x2
+ 1482 0083 08       		.byte	0x8
+ 1483 0084 07       		.byte	0x7
+ 1484 0085 6C020000 		.4byte	.LASF11
+ 1485 0089 04       		.uleb128 0x4
+ 1486 008a 04       		.byte	0x4
+ 1487 008b 05       		.byte	0x5
+ 1488 008c 696E7400 		.ascii	"int\000"
+ 1489 0090 02       		.uleb128 0x2
+ 1490 0091 04       		.byte	0x4
+ 1491 0092 07       		.byte	0x7
+ 1492 0093 90020000 		.4byte	.LASF12
+ 1493 0097 03       		.uleb128 0x3
+ 1494 0098 76010000 		.4byte	.LASF13
+ 1495 009c 03       		.byte	0x3
+ 1496 009d 18       		.byte	0x18
+ 1497 009e 2C000000 		.4byte	0x2c
+ 1498 00a2 03       		.uleb128 0x3
+ 1499 00a3 05030000 		.4byte	.LASF14
+ 1500 00a7 03       		.byte	0x3
+ 1501 00a8 24       		.byte	0x24
+ 1502 00a9 45000000 		.4byte	0x45
+ 1503 00ad 03       		.uleb128 0x3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 33
+
+
+ 1504 00ae 0E030000 		.4byte	.LASF15
+ 1505 00b2 03       		.byte	0x3
+ 1506 00b3 2C       		.byte	0x2c
+ 1507 00b4 57000000 		.4byte	0x57
+ 1508 00b8 03       		.uleb128 0x3
+ 1509 00b9 6E010000 		.4byte	.LASF16
+ 1510 00bd 03       		.byte	0x3
+ 1511 00be 38       		.byte	0x38
+ 1512 00bf 70000000 		.4byte	0x70
+ 1513 00c3 02       		.uleb128 0x2
+ 1514 00c4 04       		.byte	0x4
+ 1515 00c5 04       		.byte	0x4
+ 1516 00c6 A2010000 		.4byte	.LASF17
+ 1517 00ca 02       		.uleb128 0x2
+ 1518 00cb 08       		.byte	0x8
+ 1519 00cc 04       		.byte	0x4
+ 1520 00cd 67010000 		.4byte	.LASF18
+ 1521 00d1 02       		.uleb128 0x2
+ 1522 00d2 01       		.byte	0x1
+ 1523 00d3 08       		.byte	0x8
+ 1524 00d4 BC010000 		.4byte	.LASF19
+ 1525 00d8 02       		.uleb128 0x2
+ 1526 00d9 08       		.byte	0x8
+ 1527 00da 04       		.byte	0x4
+ 1528 00db 2F020000 		.4byte	.LASF20
+ 1529 00df 02       		.uleb128 0x2
+ 1530 00e0 04       		.byte	0x4
+ 1531 00e1 07       		.byte	0x7
+ 1532 00e2 2E000000 		.4byte	.LASF21
+ 1533 00e6 05       		.uleb128 0x5
+ 1534 00e7 97000000 		.4byte	0x97
+ 1535 00eb 06       		.uleb128 0x6
+ 1536 00ec 0C       		.byte	0xc
+ 1537 00ed 01       		.byte	0x1
+ 1538 00ee B4       		.byte	0xb4
+ 1539 00ef 14010000 		.4byte	0x114
+ 1540 00f3 07       		.uleb128 0x7
+ 1541 00f4 6900     		.ascii	"i\000"
+ 1542 00f6 01       		.byte	0x1
+ 1543 00f7 B5       		.byte	0xb5
+ 1544 00f8 C3000000 		.4byte	0xc3
+ 1545 00fc 00       		.byte	0
+ 1546 00fd 07       		.uleb128 0x7
+ 1547 00fe 7500     		.ascii	"u\000"
+ 1548 0100 01       		.byte	0x1
+ 1549 0101 B6       		.byte	0xb6
+ 1550 0102 C3000000 		.4byte	0xc3
+ 1551 0106 04       		.byte	0x4
+ 1552 0107 08       		.uleb128 0x8
+ 1553 0108 44030000 		.4byte	.LASF22
+ 1554 010c 01       		.byte	0x1
+ 1555 010d B7       		.byte	0xb7
+ 1556 010e C3000000 		.4byte	0xc3
+ 1557 0112 08       		.byte	0x8
+ 1558 0113 00       		.byte	0
+ 1559 0114 03       		.uleb128 0x3
+ 1560 0115 C6010000 		.4byte	.LASF23
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 34
+
+
+ 1561 0119 01       		.byte	0x1
+ 1562 011a B8       		.byte	0xb8
+ 1563 011b EB000000 		.4byte	0xeb
+ 1564 011f 09       		.uleb128 0x9
+ 1565 0120 2A030000 		.4byte	.LASF73
+ 1566 0124 01       		.byte	0x1
+ 1567 0125 38       		.byte	0x38
+ 1568 0126 00000000 		.4byte	.LFB64
+ 1569 012a 78010000 		.4byte	.LFE64-.LFB64
+ 1570 012e 01       		.uleb128 0x1
+ 1571 012f 9C       		.byte	0x9c
+ 1572 0130 D0010000 		.4byte	0x1d0
+ 1573 0134 0A       		.uleb128 0xa
+ 1574 0135 2A020000 		.4byte	.LASF24
+ 1575 0139 01       		.byte	0x1
+ 1576 013a 3A       		.byte	0x3a
+ 1577 013b AD000000 		.4byte	0xad
+ 1578 013f 02       		.uleb128 0x2
+ 1579 0140 91       		.byte	0x91
+ 1580 0141 54       		.sleb128 -44
+ 1581 0142 0A       		.uleb128 0xa
+ 1582 0143 7E010000 		.4byte	.LASF25
+ 1583 0147 01       		.byte	0x1
+ 1584 0148 3B       		.byte	0x3b
+ 1585 0149 AD000000 		.4byte	0xad
+ 1586 014d 02       		.uleb128 0x2
+ 1587 014e 91       		.byte	0x91
+ 1588 014f 50       		.sleb128 -48
+ 1589 0150 0B       		.uleb128 0xb
+ 1590 0151 643100   		.ascii	"d1\000"
+ 1591 0154 01       		.byte	0x1
+ 1592 0155 3D       		.byte	0x3d
+ 1593 0156 AD000000 		.4byte	0xad
+ 1594 015a 02       		.uleb128 0x2
+ 1595 015b 91       		.byte	0x91
+ 1596 015c 4C       		.sleb128 -52
+ 1597 015d 0B       		.uleb128 0xb
+ 1598 015e 643200   		.ascii	"d2\000"
+ 1599 0161 01       		.byte	0x1
+ 1600 0162 3D       		.byte	0x3d
+ 1601 0163 AD000000 		.4byte	0xad
+ 1602 0167 02       		.uleb128 0x2
+ 1603 0168 91       		.byte	0x91
+ 1604 0169 48       		.sleb128 -56
+ 1605 016a 0B       		.uleb128 0xb
+ 1606 016b 613100   		.ascii	"a1\000"
+ 1607 016e 01       		.byte	0x1
+ 1608 016f 3E       		.byte	0x3e
+ 1609 0170 AD000000 		.4byte	0xad
+ 1610 0174 02       		.uleb128 0x2
+ 1611 0175 91       		.byte	0x91
+ 1612 0176 44       		.sleb128 -60
+ 1613 0177 0B       		.uleb128 0xb
+ 1614 0178 613200   		.ascii	"a2\000"
+ 1615 017b 01       		.byte	0x1
+ 1616 017c 3F       		.byte	0x3f
+ 1617 017d AD000000 		.4byte	0xad
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 35
+
+
+ 1618 0181 02       		.uleb128 0x2
+ 1619 0182 91       		.byte	0x91
+ 1620 0183 40       		.sleb128 -64
+ 1621 0184 0A       		.uleb128 0xa
+ 1622 0185 12040000 		.4byte	.LASF26
+ 1623 0189 01       		.byte	0x1
+ 1624 018a 40       		.byte	0x40
+ 1625 018b AD000000 		.4byte	0xad
+ 1626 018f 03       		.uleb128 0x3
+ 1627 0190 91       		.byte	0x91
+ 1628 0191 BC7F     		.sleb128 -68
+ 1629 0193 0A       		.uleb128 0xa
+ 1630 0194 6B030000 		.4byte	.LASF27
+ 1631 0198 01       		.byte	0x1
+ 1632 0199 41       		.byte	0x41
+ 1633 019a AD000000 		.4byte	0xad
+ 1634 019e 03       		.uleb128 0x3
+ 1635 019f 91       		.byte	0x91
+ 1636 01a0 B87F     		.sleb128 -72
+ 1637 01a2 0A       		.uleb128 0xa
+ 1638 01a3 ED020000 		.4byte	.LASF28
+ 1639 01a7 01       		.byte	0x1
+ 1640 01a8 43       		.byte	0x43
+ 1641 01a9 B8000000 		.4byte	0xb8
+ 1642 01ad 03       		.uleb128 0x3
+ 1643 01ae 91       		.byte	0x91
+ 1644 01af B07F     		.sleb128 -80
+ 1645 01b1 0A       		.uleb128 0xa
+ 1646 01b2 83010000 		.4byte	.LASF29
+ 1647 01b6 01       		.byte	0x1
+ 1648 01b7 44       		.byte	0x44
+ 1649 01b8 AD000000 		.4byte	0xad
+ 1650 01bc 03       		.uleb128 0x3
+ 1651 01bd 91       		.byte	0x91
+ 1652 01be AC7F     		.sleb128 -84
+ 1653 01c0 0A       		.uleb128 0xa
+ 1654 01c1 39030000 		.4byte	.LASF30
+ 1655 01c5 01       		.byte	0x1
+ 1656 01c6 45       		.byte	0x45
+ 1657 01c7 AD000000 		.4byte	0xad
+ 1658 01cb 03       		.uleb128 0x3
+ 1659 01cc 91       		.byte	0x91
+ 1660 01cd A87F     		.sleb128 -88
+ 1661 01cf 00       		.byte	0
+ 1662 01d0 0C       		.uleb128 0xc
+ 1663 01d1 BA030000 		.4byte	.LASF49
+ 1664 01d5 01       		.byte	0x1
+ 1665 01d6 4F       		.byte	0x4f
+ 1666 01d7 C3000000 		.4byte	0xc3
+ 1667 01db 00000000 		.4byte	.LFB65
+ 1668 01df 48000000 		.4byte	.LFE65-.LFB65
+ 1669 01e3 01       		.uleb128 0x1
+ 1670 01e4 9C       		.byte	0x9c
+ 1671 01e5 F7010000 		.4byte	0x1f7
+ 1672 01e9 0D       		.uleb128 0xd
+ 1673 01ea 707000   		.ascii	"pp\000"
+ 1674 01ed 01       		.byte	0x1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 36
+
+
+ 1675 01ee 4F       		.byte	0x4f
+ 1676 01ef A2000000 		.4byte	0xa2
+ 1677 01f3 02       		.uleb128 0x2
+ 1678 01f4 91       		.byte	0x91
+ 1679 01f5 76       		.sleb128 -10
+ 1680 01f6 00       		.byte	0
+ 1681 01f7 0E       		.uleb128 0xe
+ 1682 01f8 75030000 		.4byte	.LASF74
+ 1683 01fc 01       		.byte	0x1
+ 1684 01fd 5B       		.byte	0x5b
+ 1685 01fe 00000000 		.4byte	.LFB66
+ 1686 0202 C0020000 		.4byte	.LFE66-.LFB66
+ 1687 0206 01       		.uleb128 0x1
+ 1688 0207 9C       		.byte	0x9c
+ 1689 0208 86030000 		.4byte	0x386
+ 1690 020c 0F       		.uleb128 0xf
+ 1691 020d 06000000 		.4byte	.LASF31
+ 1692 0211 01       		.byte	0x1
+ 1693 0212 5D       		.byte	0x5d
+ 1694 0213 86030000 		.4byte	0x386
+ 1695 0217 02       		.uleb128 0x2
+ 1696 0218 91       		.byte	0x91
+ 1697 0219 5C       		.sleb128 -36
+ 1698 021a 0F       		.uleb128 0xf
+ 1699 021b E8030000 		.4byte	.LASF32
+ 1700 021f 01       		.byte	0x1
+ 1701 0220 5D       		.byte	0x5d
+ 1702 0221 86030000 		.4byte	0x386
+ 1703 0225 02       		.uleb128 0x2
+ 1704 0226 91       		.byte	0x91
+ 1705 0227 58       		.sleb128 -40
+ 1706 0228 0F       		.uleb128 0xf
+ 1707 0229 9D020000 		.4byte	.LASF33
+ 1708 022d 01       		.byte	0x1
+ 1709 022e 5D       		.byte	0x5d
+ 1710 022f 86030000 		.4byte	0x386
+ 1711 0233 02       		.uleb128 0x2
+ 1712 0234 91       		.byte	0x91
+ 1713 0235 54       		.sleb128 -44
+ 1714 0236 0B       		.uleb128 0xb
+ 1715 0237 563100   		.ascii	"V1\000"
+ 1716 023a 01       		.byte	0x1
+ 1717 023b 60       		.byte	0x60
+ 1718 023c A2000000 		.4byte	0xa2
+ 1719 0240 02       		.uleb128 0x2
+ 1720 0241 91       		.byte	0x91
+ 1721 0242 76       		.sleb128 -10
+ 1722 0243 0B       		.uleb128 0xb
+ 1723 0244 563200   		.ascii	"V2\000"
+ 1724 0247 01       		.byte	0x1
+ 1725 0248 61       		.byte	0x61
+ 1726 0249 A2000000 		.4byte	0xa2
+ 1727 024d 02       		.uleb128 0x2
+ 1728 024e 91       		.byte	0x91
+ 1729 024f 74       		.sleb128 -12
+ 1730 0250 0B       		.uleb128 0xb
+ 1731 0251 563300   		.ascii	"V3\000"
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 37
+
+
+ 1732 0254 01       		.byte	0x1
+ 1733 0255 62       		.byte	0x62
+ 1734 0256 A2000000 		.4byte	0xa2
+ 1735 025a 02       		.uleb128 0x2
+ 1736 025b 91       		.byte	0x91
+ 1737 025c 72       		.sleb128 -14
+ 1738 025d 0B       		.uleb128 0xb
+ 1739 025e 563400   		.ascii	"V4\000"
+ 1740 0261 01       		.byte	0x1
+ 1741 0262 63       		.byte	0x63
+ 1742 0263 A2000000 		.4byte	0xa2
+ 1743 0267 02       		.uleb128 0x2
+ 1744 0268 91       		.byte	0x91
+ 1745 0269 70       		.sleb128 -16
+ 1746 026a 0B       		.uleb128 0xb
+ 1747 026b 563500   		.ascii	"V5\000"
+ 1748 026e 01       		.byte	0x1
+ 1749 026f 64       		.byte	0x64
+ 1750 0270 A2000000 		.4byte	0xa2
+ 1751 0274 02       		.uleb128 0x2
+ 1752 0275 91       		.byte	0x91
+ 1753 0276 6E       		.sleb128 -18
+ 1754 0277 0B       		.uleb128 0xb
+ 1755 0278 563600   		.ascii	"V6\000"
+ 1756 027b 01       		.byte	0x1
+ 1757 027c 65       		.byte	0x65
+ 1758 027d A2000000 		.4byte	0xa2
+ 1759 0281 02       		.uleb128 0x2
+ 1760 0282 91       		.byte	0x91
+ 1761 0283 6C       		.sleb128 -20
+ 1762 0284 0B       		.uleb128 0xb
+ 1763 0285 733100   		.ascii	"s1\000"
+ 1764 0288 01       		.byte	0x1
+ 1765 0289 6C       		.byte	0x6c
+ 1766 028a 97000000 		.4byte	0x97
+ 1767 028e 05       		.uleb128 0x5
+ 1768 028f 03       		.byte	0x3
+ 1769 0290 0C000000 		.4byte	s1.8243
+ 1770 0294 0B       		.uleb128 0xb
+ 1771 0295 733200   		.ascii	"s2\000"
+ 1772 0298 01       		.byte	0x1
+ 1773 0299 6C       		.byte	0x6c
+ 1774 029a 97000000 		.4byte	0x97
+ 1775 029e 05       		.uleb128 0x5
+ 1776 029f 03       		.byte	0x3
+ 1777 02a0 0D000000 		.4byte	s2.8244
+ 1778 02a4 0A       		.uleb128 0xa
+ 1779 02a5 A3020000 		.4byte	.LASF34
+ 1780 02a9 01       		.byte	0x1
+ 1781 02aa 6D       		.byte	0x6d
+ 1782 02ab 97000000 		.4byte	0x97
+ 1783 02af 02       		.uleb128 0x2
+ 1784 02b0 91       		.byte	0x91
+ 1785 02b1 6B       		.sleb128 -21
+ 1786 02b2 0A       		.uleb128 0xa
+ 1787 02b3 25000000 		.4byte	.LASF35
+ 1788 02b7 01       		.byte	0x1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 38
+
+
+ 1789 02b8 6E       		.byte	0x6e
+ 1790 02b9 97000000 		.4byte	0x97
+ 1791 02bd 02       		.uleb128 0x2
+ 1792 02be 91       		.byte	0x91
+ 1793 02bf 6A       		.sleb128 -22
+ 1794 02c0 0A       		.uleb128 0xa
+ 1795 02c1 16030000 		.4byte	.LASF36
+ 1796 02c5 01       		.byte	0x1
+ 1797 02c6 6F       		.byte	0x6f
+ 1798 02c7 97000000 		.4byte	0x97
+ 1799 02cb 02       		.uleb128 0x2
+ 1800 02cc 91       		.byte	0x91
+ 1801 02cd 69       		.sleb128 -23
+ 1802 02ce 0A       		.uleb128 0xa
+ 1803 02cf 14020000 		.4byte	.LASF37
+ 1804 02d3 01       		.byte	0x1
+ 1805 02d4 71       		.byte	0x71
+ 1806 02d5 97000000 		.4byte	0x97
+ 1807 02d9 02       		.uleb128 0x2
+ 1808 02da 91       		.byte	0x91
+ 1809 02db 68       		.sleb128 -24
+ 1810 02dc 0A       		.uleb128 0xa
+ 1811 02dd C1010000 		.4byte	.LASF38
+ 1812 02e1 01       		.byte	0x1
+ 1813 02e2 81       		.byte	0x81
+ 1814 02e3 97000000 		.4byte	0x97
+ 1815 02e7 05       		.uleb128 0x5
+ 1816 02e8 03       		.byte	0x3
+ 1817 02e9 10000000 		.4byte	debL.8249
+ 1818 02ed 0A       		.uleb128 0xa
+ 1819 02ee E4010000 		.4byte	.LASF39
+ 1820 02f2 01       		.byte	0x1
+ 1821 02f3 81       		.byte	0x81
+ 1822 02f4 97000000 		.4byte	0x97
+ 1823 02f8 05       		.uleb128 0x5
+ 1824 02f9 03       		.byte	0x3
+ 1825 02fa 11000000 		.4byte	debR.8250
+ 1826 02fe 0A       		.uleb128 0xa
+ 1827 02ff DC030000 		.4byte	.LASF40
+ 1828 0303 01       		.byte	0x1
+ 1829 0304 82       		.byte	0x82
+ 1830 0305 97000000 		.4byte	0x97
+ 1831 0309 05       		.uleb128 0x5
+ 1832 030a 03       		.byte	0x3
+ 1833 030b 12000000 		.4byte	latched_any.8251
+ 1834 030f 0A       		.uleb128 0xa
+ 1835 0310 B6010000 		.4byte	.LASF41
+ 1836 0314 01       		.byte	0x1
+ 1837 0315 83       		.byte	0x83
+ 1838 0316 97000000 		.4byte	0x97
+ 1839 031a 05       		.uleb128 0x5
+ 1840 031b 03       		.byte	0x3
+ 1841 031c 0F000000 		.4byte	armed.8252
+ 1842 0320 0A       		.uleb128 0xa
+ 1843 0321 E9010000 		.4byte	.LASF42
+ 1844 0325 01       		.byte	0x1
+ 1845 0326 84       		.byte	0x84
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 39
+
+
+ 1846 0327 97000000 		.4byte	0x97
+ 1847 032b 05       		.uleb128 0x5
+ 1848 032c 03       		.byte	0x3
+ 1849 032d 0E000000 		.4byte	clear_cnt.8253
+ 1850 0331 0A       		.uleb128 0xa
+ 1851 0332 12000000 		.4byte	.LASF43
+ 1852 0336 01       		.byte	0x1
+ 1853 0337 86       		.byte	0x86
+ 1854 0338 97000000 		.4byte	0x97
+ 1855 033c 02       		.uleb128 0x2
+ 1856 033d 91       		.byte	0x91
+ 1857 033e 67       		.sleb128 -25
+ 1858 033f 0A       		.uleb128 0xa
+ 1859 0340 F3010000 		.4byte	.LASF44
+ 1860 0344 01       		.byte	0x1
+ 1861 0345 87       		.byte	0x87
+ 1862 0346 97000000 		.4byte	0x97
+ 1863 034a 02       		.uleb128 0x2
+ 1864 034b 91       		.byte	0x91
+ 1865 034c 66       		.sleb128 -26
+ 1866 034d 0A       		.uleb128 0xa
+ 1867 034e 8B010000 		.4byte	.LASF45
+ 1868 0352 01       		.byte	0x1
+ 1869 0353 88       		.byte	0x88
+ 1870 0354 97000000 		.4byte	0x97
+ 1871 0358 02       		.uleb128 0x2
+ 1872 0359 91       		.byte	0x91
+ 1873 035a 65       		.sleb128 -27
+ 1874 035b 0A       		.uleb128 0xa
+ 1875 035c C1020000 		.4byte	.LASF46
+ 1876 0360 01       		.byte	0x1
+ 1877 0361 94       		.byte	0x94
+ 1878 0362 97000000 		.4byte	0x97
+ 1879 0366 02       		.uleb128 0x2
+ 1880 0367 91       		.byte	0x91
+ 1881 0368 64       		.sleb128 -28
+ 1882 0369 0A       		.uleb128 0xa
+ 1883 036a 05040000 		.4byte	.LASF47
+ 1884 036e 01       		.byte	0x1
+ 1885 036f 95       		.byte	0x95
+ 1886 0370 97000000 		.4byte	0x97
+ 1887 0374 02       		.uleb128 0x2
+ 1888 0375 91       		.byte	0x91
+ 1889 0376 63       		.sleb128 -29
+ 1890 0377 0A       		.uleb128 0xa
+ 1891 0378 A8030000 		.4byte	.LASF48
+ 1892 037c 01       		.byte	0x1
+ 1893 037d 96       		.byte	0x96
+ 1894 037e 97000000 		.4byte	0x97
+ 1895 0382 02       		.uleb128 0x2
+ 1896 0383 91       		.byte	0x91
+ 1897 0384 62       		.sleb128 -30
+ 1898 0385 00       		.byte	0
+ 1899 0386 10       		.uleb128 0x10
+ 1900 0387 04       		.byte	0x4
+ 1901 0388 A2000000 		.4byte	0xa2
+ 1902 038c 0C       		.uleb128 0xc
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 40
+
+
+ 1903 038d B9020000 		.4byte	.LASF50
+ 1904 0391 01       		.byte	0x1
+ 1905 0392 BA       		.byte	0xba
+ 1906 0393 C3000000 		.4byte	0xc3
+ 1907 0397 00000000 		.4byte	.LFB67
+ 1908 039b 3A000000 		.4byte	.LFE67-.LFB67
+ 1909 039f 01       		.uleb128 0x1
+ 1910 03a0 9C       		.byte	0x9c
+ 1911 03a1 CC030000 		.4byte	0x3cc
+ 1912 03a5 0D       		.uleb128 0xd
+ 1913 03a6 7800     		.ascii	"x\000"
+ 1914 03a8 01       		.byte	0x1
+ 1915 03a9 BA       		.byte	0xba
+ 1916 03aa C3000000 		.4byte	0xc3
+ 1917 03ae 02       		.uleb128 0x2
+ 1918 03af 91       		.byte	0x91
+ 1919 03b0 74       		.sleb128 -12
+ 1920 03b1 0D       		.uleb128 0xd
+ 1921 03b2 6C6F00   		.ascii	"lo\000"
+ 1922 03b5 01       		.byte	0x1
+ 1923 03b6 BA       		.byte	0xba
+ 1924 03b7 C3000000 		.4byte	0xc3
+ 1925 03bb 02       		.uleb128 0x2
+ 1926 03bc 91       		.byte	0x91
+ 1927 03bd 70       		.sleb128 -16
+ 1928 03be 0D       		.uleb128 0xd
+ 1929 03bf 686900   		.ascii	"hi\000"
+ 1930 03c2 01       		.byte	0x1
+ 1931 03c3 BA       		.byte	0xba
+ 1932 03c4 C3000000 		.4byte	0xc3
+ 1933 03c8 02       		.uleb128 0x2
+ 1934 03c9 91       		.byte	0x91
+ 1935 03ca 6C       		.sleb128 -20
+ 1936 03cb 00       		.byte	0
+ 1937 03cc 0C       		.uleb128 0xc
+ 1938 03cd 9A010000 		.4byte	.LASF51
+ 1939 03d1 01       		.byte	0x1
+ 1940 03d2 BD       		.byte	0xbd
+ 1941 03d3 89000000 		.4byte	0x89
+ 1942 03d7 00000000 		.4byte	.LFB68
+ 1943 03db 64020000 		.4byte	.LFE68-.LFB68
+ 1944 03df 01       		.uleb128 0x1
+ 1945 03e0 9C       		.byte	0x9c
+ 1946 03e1 DA040000 		.4byte	0x4da
+ 1947 03e5 0D       		.uleb128 0xd
+ 1948 03e6 706900   		.ascii	"pi\000"
+ 1949 03e9 01       		.byte	0x1
+ 1950 03ea BD       		.byte	0xbd
+ 1951 03eb DA040000 		.4byte	0x4da
+ 1952 03ef 03       		.uleb128 0x3
+ 1953 03f0 91       		.byte	0x91
+ 1954 03f1 BC7F     		.sleb128 -68
+ 1955 03f3 0F       		.uleb128 0xf
+ 1956 03f4 06000000 		.4byte	.LASF31
+ 1957 03f8 01       		.byte	0x1
+ 1958 03f9 BD       		.byte	0xbd
+ 1959 03fa A2000000 		.4byte	0xa2
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 41
+
+
+ 1960 03fe 03       		.uleb128 0x3
+ 1961 03ff 91       		.byte	0x91
+ 1962 0400 BA7F     		.sleb128 -70
+ 1963 0402 0F       		.uleb128 0xf
+ 1964 0403 E8030000 		.4byte	.LASF32
+ 1965 0407 01       		.byte	0x1
+ 1966 0408 BD       		.byte	0xbd
+ 1967 0409 A2000000 		.4byte	0xa2
+ 1968 040d 03       		.uleb128 0x3
+ 1969 040e 91       		.byte	0x91
+ 1970 040f B87F     		.sleb128 -72
+ 1971 0411 0F       		.uleb128 0xf
+ 1972 0412 9D020000 		.4byte	.LASF33
+ 1973 0416 01       		.byte	0x1
+ 1974 0417 BD       		.byte	0xbd
+ 1975 0418 A2000000 		.4byte	0xa2
+ 1976 041c 03       		.uleb128 0x3
+ 1977 041d 91       		.byte	0x91
+ 1978 041e B67F     		.sleb128 -74
+ 1979 0420 0B       		.uleb128 0xb
+ 1980 0421 633400   		.ascii	"c4\000"
+ 1981 0424 01       		.byte	0x1
+ 1982 0425 C0       		.byte	0xc0
+ 1983 0426 C3000000 		.4byte	0xc3
+ 1984 042a 02       		.uleb128 0x2
+ 1985 042b 91       		.byte	0x91
+ 1986 042c 68       		.sleb128 -24
+ 1987 042d 0B       		.uleb128 0xb
+ 1988 042e 633500   		.ascii	"c5\000"
+ 1989 0431 01       		.byte	0x1
+ 1990 0432 C1       		.byte	0xc1
+ 1991 0433 C3000000 		.4byte	0xc3
+ 1992 0437 02       		.uleb128 0x2
+ 1993 0438 91       		.byte	0x91
+ 1994 0439 64       		.sleb128 -28
+ 1995 043a 0B       		.uleb128 0xb
+ 1996 043b 633600   		.ascii	"c6\000"
+ 1997 043e 01       		.byte	0x1
+ 1998 043f C2       		.byte	0xc2
+ 1999 0440 C3000000 		.4byte	0xc3
+ 2000 0444 02       		.uleb128 0x2
+ 2001 0445 91       		.byte	0x91
+ 2002 0446 60       		.sleb128 -32
+ 2003 0447 0B       		.uleb128 0xb
+ 2004 0448 73756D00 		.ascii	"sum\000"
+ 2005 044c 01       		.byte	0x1
+ 2006 044d C5       		.byte	0xc5
+ 2007 044e C3000000 		.4byte	0xc3
+ 2008 0452 02       		.uleb128 0x2
+ 2009 0453 91       		.byte	0x91
+ 2010 0454 5C       		.sleb128 -36
+ 2011 0455 0A       		.uleb128 0xa
+ 2012 0456 00000000 		.4byte	.LASF52
+ 2013 045a 01       		.byte	0x1
+ 2014 045b C6       		.byte	0xc6
+ 2015 045c E0040000 		.4byte	0x4e0
+ 2016 0460 02       		.uleb128 0x2
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 42
+
+
+ 2017 0461 91       		.byte	0x91
+ 2018 0462 5B       		.sleb128 -37
+ 2019 0463 0B       		.uleb128 0xb
+ 2020 0464 706F7300 		.ascii	"pos\000"
+ 2021 0468 01       		.byte	0x1
+ 2022 0469 C9       		.byte	0xc9
+ 2023 046a C3000000 		.4byte	0xc3
+ 2024 046e 02       		.uleb128 0x2
+ 2025 046f 91       		.byte	0x91
+ 2026 0470 6C       		.sleb128 -20
+ 2027 0471 0B       		.uleb128 0xb
+ 2028 0472 6500     		.ascii	"e\000"
+ 2029 0474 01       		.byte	0x1
+ 2030 0475 CD       		.byte	0xcd
+ 2031 0476 C3000000 		.4byte	0xc3
+ 2032 047a 02       		.uleb128 0x2
+ 2033 047b 91       		.byte	0x91
+ 2034 047c 54       		.sleb128 -44
+ 2035 047d 0A       		.uleb128 0xa
+ 2036 047e 4B030000 		.4byte	.LASF53
+ 2037 0482 01       		.byte	0x1
+ 2038 0483 DD       		.byte	0xdd
+ 2039 0484 C3000000 		.4byte	0xc3
+ 2040 0488 02       		.uleb128 0x2
+ 2041 0489 91       		.byte	0x91
+ 2042 048a 4C       		.sleb128 -52
+ 2043 048b 0A       		.uleb128 0xa
+ 2044 048c DE010000 		.4byte	.LASF54
+ 2045 0490 01       		.byte	0x1
+ 2046 0491 E1       		.byte	0xe1
+ 2047 0492 C3000000 		.4byte	0xc3
+ 2048 0496 02       		.uleb128 0x2
+ 2049 0497 91       		.byte	0x91
+ 2050 0498 48       		.sleb128 -56
+ 2051 0499 0B       		.uleb128 0xb
+ 2052 049a 7500     		.ascii	"u\000"
+ 2053 049c 01       		.byte	0x1
+ 2054 049d E5       		.byte	0xe5
+ 2055 049e C3000000 		.4byte	0xc3
+ 2056 04a2 02       		.uleb128 0x2
+ 2057 04a3 91       		.byte	0x91
+ 2058 04a4 44       		.sleb128 -60
+ 2059 04a5 0A       		.uleb128 0xa
+ 2060 04a6 A1030000 		.4byte	.LASF55
+ 2061 04aa 01       		.byte	0x1
+ 2062 04ab E7       		.byte	0xe7
+ 2063 04ac E0040000 		.4byte	0x4e0
+ 2064 04b0 02       		.uleb128 0x2
+ 2065 04b1 91       		.byte	0x91
+ 2066 04b2 43       		.sleb128 -61
+ 2067 04b3 0A       		.uleb128 0xa
+ 2068 04b4 D5030000 		.4byte	.LASF56
+ 2069 04b8 01       		.byte	0x1
+ 2070 04b9 E8       		.byte	0xe8
+ 2071 04ba E0040000 		.4byte	0x4e0
+ 2072 04be 02       		.uleb128 0x2
+ 2073 04bf 91       		.byte	0x91
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 43
+
+
+ 2074 04c0 42       		.sleb128 -62
+ 2075 04c1 11       		.uleb128 0x11
+ 2076 04c2 DC000000 		.4byte	.LBB2
+ 2077 04c6 18000000 		.4byte	.LBE2-.LBB2
+ 2078 04ca 0A       		.uleb128 0xa
+ 2079 04cb 0C000000 		.4byte	.LASF57
+ 2080 04cf 01       		.byte	0x1
+ 2081 04d0 D4       		.byte	0xd4
+ 2082 04d1 E7040000 		.4byte	0x4e7
+ 2083 04d5 02       		.uleb128 0x2
+ 2084 04d6 91       		.byte	0x91
+ 2085 04d7 50       		.sleb128 -48
+ 2086 04d8 00       		.byte	0
+ 2087 04d9 00       		.byte	0
+ 2088 04da 10       		.uleb128 0x10
+ 2089 04db 04       		.byte	0x4
+ 2090 04dc 14010000 		.4byte	0x114
+ 2091 04e0 02       		.uleb128 0x2
+ 2092 04e1 01       		.byte	0x1
+ 2093 04e2 02       		.byte	0x2
+ 2094 04e3 24030000 		.4byte	.LASF58
+ 2095 04e7 12       		.uleb128 0x12
+ 2096 04e8 C3000000 		.4byte	0xc3
+ 2097 04ec 13       		.uleb128 0x13
+ 2098 04ed 57010000 		.4byte	.LASF75
+ 2099 04f1 01       		.byte	0x1
+ 2100 04f2 F6       		.byte	0xf6
+ 2101 04f3 89000000 		.4byte	0x89
+ 2102 04f7 00000000 		.4byte	.LFB69
+ 2103 04fb 48010000 		.4byte	.LFE69-.LFB69
+ 2104 04ff 01       		.uleb128 0x1
+ 2105 0500 9C       		.byte	0x9c
+ 2106 0501 69050000 		.4byte	0x569
+ 2107 0505 14       		.uleb128 0x14
+ 2108 0506 F5020000 		.4byte	.LASF59
+ 2109 050a 01       		.byte	0x1
+ 2110 050b 1201     		.2byte	0x112
+ 2111 050d 89000000 		.4byte	0x89
+ 2112 0511 02       		.uleb128 0x2
+ 2113 0512 91       		.byte	0x91
+ 2114 0513 74       		.sleb128 -12
+ 2115 0514 15       		.uleb128 0x15
+ 2116 0515 706900   		.ascii	"pi\000"
+ 2117 0518 01       		.byte	0x1
+ 2118 0519 1701     		.2byte	0x117
+ 2119 051b 14010000 		.4byte	0x114
+ 2120 051f 02       		.uleb128 0x2
+ 2121 0520 91       		.byte	0x91
+ 2122 0521 64       		.sleb128 -28
+ 2123 0522 11       		.uleb128 0x11
+ 2124 0523 8C000000 		.4byte	.LBB3
+ 2125 0527 AA000000 		.4byte	.LBE3-.LBB3
+ 2126 052b 14       		.uleb128 0x14
+ 2127 052c 06000000 		.4byte	.LASF31
+ 2128 0530 01       		.byte	0x1
+ 2129 0531 2501     		.2byte	0x125
+ 2130 0533 A2000000 		.4byte	0xa2
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 44
+
+
+ 2131 0537 02       		.uleb128 0x2
+ 2132 0538 91       		.byte	0x91
+ 2133 0539 62       		.sleb128 -30
+ 2134 053a 14       		.uleb128 0x14
+ 2135 053b E8030000 		.4byte	.LASF32
+ 2136 053f 01       		.byte	0x1
+ 2137 0540 2501     		.2byte	0x125
+ 2138 0542 A2000000 		.4byte	0xa2
+ 2139 0546 02       		.uleb128 0x2
+ 2140 0547 91       		.byte	0x91
+ 2141 0548 60       		.sleb128 -32
+ 2142 0549 14       		.uleb128 0x14
+ 2143 054a 9D020000 		.4byte	.LASF33
+ 2144 054e 01       		.byte	0x1
+ 2145 054f 2501     		.2byte	0x125
+ 2146 0551 A2000000 		.4byte	0xa2
+ 2147 0555 02       		.uleb128 0x2
+ 2148 0556 91       		.byte	0x91
+ 2149 0557 5E       		.sleb128 -34
+ 2150 0558 14       		.uleb128 0x14
+ 2151 0559 1E030000 		.4byte	.LASF60
+ 2152 055d 01       		.byte	0x1
+ 2153 055e 3201     		.2byte	0x132
+ 2154 0560 89000000 		.4byte	0x89
+ 2155 0564 02       		.uleb128 0x2
+ 2156 0565 91       		.byte	0x91
+ 2157 0566 70       		.sleb128 -16
+ 2158 0567 00       		.byte	0
+ 2159 0568 00       		.byte	0
+ 2160 0569 0A       		.uleb128 0xa
+ 2161 056a 07020000 		.4byte	.LASF61
+ 2162 056e 01       		.byte	0x1
+ 2163 056f 2D       		.byte	0x2d
+ 2164 0570 97000000 		.4byte	0x97
+ 2165 0574 05       		.uleb128 0x5
+ 2166 0575 03       		.byte	0x3
+ 2167 0576 00000000 		.4byte	sen1_on_line
+ 2168 057a 0A       		.uleb128 0xa
+ 2169 057b 3B020000 		.4byte	.LASF62
+ 2170 057f 01       		.byte	0x1
+ 2171 0580 2D       		.byte	0x2d
+ 2172 0581 97000000 		.4byte	0x97
+ 2173 0585 05       		.uleb128 0x5
+ 2174 0586 03       		.byte	0x3
+ 2175 0587 01000000 		.4byte	sen2_on_line
+ 2176 058b 0A       		.uleb128 0xa
+ 2177 058c 53020000 		.4byte	.LASF63
+ 2178 0590 01       		.byte	0x1
+ 2179 0591 2D       		.byte	0x2d
+ 2180 0592 97000000 		.4byte	0x97
+ 2181 0596 05       		.uleb128 0x5
+ 2182 0597 03       		.byte	0x3
+ 2183 0598 02000000 		.4byte	sen3_on_line
+ 2184 059c 0A       		.uleb128 0xa
+ 2185 059d 83020000 		.4byte	.LASF64
+ 2186 05a1 01       		.byte	0x1
+ 2187 05a2 2E       		.byte	0x2e
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 45
+
+
+ 2188 05a3 97000000 		.4byte	0x97
+ 2189 05a7 05       		.uleb128 0x5
+ 2190 05a8 03       		.byte	0x3
+ 2191 05a9 03000000 		.4byte	sen4_on_line
+ 2192 05ad 0A       		.uleb128 0xa
+ 2193 05ae AC020000 		.4byte	.LASF65
+ 2194 05b2 01       		.byte	0x1
+ 2195 05b3 2E       		.byte	0x2e
+ 2196 05b4 97000000 		.4byte	0x97
+ 2197 05b8 05       		.uleb128 0x5
+ 2198 05b9 03       		.byte	0x3
+ 2199 05ba 04000000 		.4byte	sen5_on_line
+ 2200 05be 0A       		.uleb128 0xa
+ 2201 05bf E0020000 		.4byte	.LASF66
+ 2202 05c3 01       		.byte	0x1
+ 2203 05c4 2E       		.byte	0x2e
+ 2204 05c5 97000000 		.4byte	0x97
+ 2205 05c9 05       		.uleb128 0x5
+ 2206 05ca 03       		.byte	0x3
+ 2207 05cb 05000000 		.4byte	sen6_on_line
+ 2208 05cf 0A       		.uleb128 0xa
+ 2209 05d0 C9030000 		.4byte	.LASF67
+ 2210 05d4 01       		.byte	0x1
+ 2211 05d5 31       		.byte	0x31
+ 2212 05d6 E6000000 		.4byte	0xe6
+ 2213 05da 05       		.uleb128 0x5
+ 2214 05db 03       		.byte	0x3
+ 2215 05dc 06000000 		.4byte	g_direction
+ 2216 05e0 0A       		.uleb128 0xa
+ 2217 05e1 48020000 		.4byte	.LASF68
+ 2218 05e5 01       		.byte	0x1
+ 2219 05e6 32       		.byte	0x32
+ 2220 05e7 E6000000 		.4byte	0xe6
+ 2221 05eb 05       		.uleb128 0x5
+ 2222 05ec 03       		.byte	0x3
+ 2223 05ed 07000000 		.4byte	g_stop_now
+ 2224 05f1 0A       		.uleb128 0xa
+ 2225 05f2 EE030000 		.4byte	.LASF69
+ 2226 05f6 01       		.byte	0x1
+ 2227 05f7 33       		.byte	0x33
+ 2228 05f8 02060000 		.4byte	0x602
+ 2229 05fc 05       		.uleb128 0x5
+ 2230 05fd 03       		.byte	0x3
+ 2231 05fe 08000000 		.4byte	g_dist_mm
+ 2232 0602 05       		.uleb128 0x5
+ 2233 0603 AD000000 		.4byte	0xad
+ 2234 0607 16       		.uleb128 0x16
+ 2235 0608 F8030000 		.4byte	.LASF76
+ 2236 060c 04       		.byte	0x4
+ 2237 060d 1207     		.2byte	0x712
+ 2238 060f 02060000 		.4byte	0x602
+ 2239 0613 00       		.byte	0
+ 2240              		.section	.debug_abbrev,"",%progbits
+ 2241              	.Ldebug_abbrev0:
+ 2242 0000 01       		.uleb128 0x1
+ 2243 0001 11       		.uleb128 0x11
+ 2244 0002 01       		.byte	0x1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 46
+
+
+ 2245 0003 25       		.uleb128 0x25
+ 2246 0004 0E       		.uleb128 0xe
+ 2247 0005 13       		.uleb128 0x13
+ 2248 0006 0B       		.uleb128 0xb
+ 2249 0007 03       		.uleb128 0x3
+ 2250 0008 0E       		.uleb128 0xe
+ 2251 0009 1B       		.uleb128 0x1b
+ 2252 000a 0E       		.uleb128 0xe
+ 2253 000b 55       		.uleb128 0x55
+ 2254 000c 17       		.uleb128 0x17
+ 2255 000d 11       		.uleb128 0x11
+ 2256 000e 01       		.uleb128 0x1
+ 2257 000f 10       		.uleb128 0x10
+ 2258 0010 17       		.uleb128 0x17
+ 2259 0011 00       		.byte	0
+ 2260 0012 00       		.byte	0
+ 2261 0013 02       		.uleb128 0x2
+ 2262 0014 24       		.uleb128 0x24
+ 2263 0015 00       		.byte	0
+ 2264 0016 0B       		.uleb128 0xb
+ 2265 0017 0B       		.uleb128 0xb
+ 2266 0018 3E       		.uleb128 0x3e
+ 2267 0019 0B       		.uleb128 0xb
+ 2268 001a 03       		.uleb128 0x3
+ 2269 001b 0E       		.uleb128 0xe
+ 2270 001c 00       		.byte	0
+ 2271 001d 00       		.byte	0
+ 2272 001e 03       		.uleb128 0x3
+ 2273 001f 16       		.uleb128 0x16
+ 2274 0020 00       		.byte	0
+ 2275 0021 03       		.uleb128 0x3
+ 2276 0022 0E       		.uleb128 0xe
+ 2277 0023 3A       		.uleb128 0x3a
+ 2278 0024 0B       		.uleb128 0xb
+ 2279 0025 3B       		.uleb128 0x3b
+ 2280 0026 0B       		.uleb128 0xb
+ 2281 0027 49       		.uleb128 0x49
+ 2282 0028 13       		.uleb128 0x13
+ 2283 0029 00       		.byte	0
+ 2284 002a 00       		.byte	0
+ 2285 002b 04       		.uleb128 0x4
+ 2286 002c 24       		.uleb128 0x24
+ 2287 002d 00       		.byte	0
+ 2288 002e 0B       		.uleb128 0xb
+ 2289 002f 0B       		.uleb128 0xb
+ 2290 0030 3E       		.uleb128 0x3e
+ 2291 0031 0B       		.uleb128 0xb
+ 2292 0032 03       		.uleb128 0x3
+ 2293 0033 08       		.uleb128 0x8
+ 2294 0034 00       		.byte	0
+ 2295 0035 00       		.byte	0
+ 2296 0036 05       		.uleb128 0x5
+ 2297 0037 35       		.uleb128 0x35
+ 2298 0038 00       		.byte	0
+ 2299 0039 49       		.uleb128 0x49
+ 2300 003a 13       		.uleb128 0x13
+ 2301 003b 00       		.byte	0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 47
+
+
+ 2302 003c 00       		.byte	0
+ 2303 003d 06       		.uleb128 0x6
+ 2304 003e 13       		.uleb128 0x13
+ 2305 003f 01       		.byte	0x1
+ 2306 0040 0B       		.uleb128 0xb
+ 2307 0041 0B       		.uleb128 0xb
+ 2308 0042 3A       		.uleb128 0x3a
+ 2309 0043 0B       		.uleb128 0xb
+ 2310 0044 3B       		.uleb128 0x3b
+ 2311 0045 0B       		.uleb128 0xb
+ 2312 0046 01       		.uleb128 0x1
+ 2313 0047 13       		.uleb128 0x13
+ 2314 0048 00       		.byte	0
+ 2315 0049 00       		.byte	0
+ 2316 004a 07       		.uleb128 0x7
+ 2317 004b 0D       		.uleb128 0xd
+ 2318 004c 00       		.byte	0
+ 2319 004d 03       		.uleb128 0x3
+ 2320 004e 08       		.uleb128 0x8
+ 2321 004f 3A       		.uleb128 0x3a
+ 2322 0050 0B       		.uleb128 0xb
+ 2323 0051 3B       		.uleb128 0x3b
+ 2324 0052 0B       		.uleb128 0xb
+ 2325 0053 49       		.uleb128 0x49
+ 2326 0054 13       		.uleb128 0x13
+ 2327 0055 38       		.uleb128 0x38
+ 2328 0056 0B       		.uleb128 0xb
+ 2329 0057 00       		.byte	0
+ 2330 0058 00       		.byte	0
+ 2331 0059 08       		.uleb128 0x8
+ 2332 005a 0D       		.uleb128 0xd
+ 2333 005b 00       		.byte	0
+ 2334 005c 03       		.uleb128 0x3
+ 2335 005d 0E       		.uleb128 0xe
+ 2336 005e 3A       		.uleb128 0x3a
+ 2337 005f 0B       		.uleb128 0xb
+ 2338 0060 3B       		.uleb128 0x3b
+ 2339 0061 0B       		.uleb128 0xb
+ 2340 0062 49       		.uleb128 0x49
+ 2341 0063 13       		.uleb128 0x13
+ 2342 0064 38       		.uleb128 0x38
+ 2343 0065 0B       		.uleb128 0xb
+ 2344 0066 00       		.byte	0
+ 2345 0067 00       		.byte	0
+ 2346 0068 09       		.uleb128 0x9
+ 2347 0069 2E       		.uleb128 0x2e
+ 2348 006a 01       		.byte	0x1
+ 2349 006b 3F       		.uleb128 0x3f
+ 2350 006c 19       		.uleb128 0x19
+ 2351 006d 03       		.uleb128 0x3
+ 2352 006e 0E       		.uleb128 0xe
+ 2353 006f 3A       		.uleb128 0x3a
+ 2354 0070 0B       		.uleb128 0xb
+ 2355 0071 3B       		.uleb128 0x3b
+ 2356 0072 0B       		.uleb128 0xb
+ 2357 0073 27       		.uleb128 0x27
+ 2358 0074 19       		.uleb128 0x19
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 48
+
+
+ 2359 0075 11       		.uleb128 0x11
+ 2360 0076 01       		.uleb128 0x1
+ 2361 0077 12       		.uleb128 0x12
+ 2362 0078 06       		.uleb128 0x6
+ 2363 0079 40       		.uleb128 0x40
+ 2364 007a 18       		.uleb128 0x18
+ 2365 007b 9642     		.uleb128 0x2116
+ 2366 007d 19       		.uleb128 0x19
+ 2367 007e 01       		.uleb128 0x1
+ 2368 007f 13       		.uleb128 0x13
+ 2369 0080 00       		.byte	0
+ 2370 0081 00       		.byte	0
+ 2371 0082 0A       		.uleb128 0xa
+ 2372 0083 34       		.uleb128 0x34
+ 2373 0084 00       		.byte	0
+ 2374 0085 03       		.uleb128 0x3
+ 2375 0086 0E       		.uleb128 0xe
+ 2376 0087 3A       		.uleb128 0x3a
+ 2377 0088 0B       		.uleb128 0xb
+ 2378 0089 3B       		.uleb128 0x3b
+ 2379 008a 0B       		.uleb128 0xb
+ 2380 008b 49       		.uleb128 0x49
+ 2381 008c 13       		.uleb128 0x13
+ 2382 008d 02       		.uleb128 0x2
+ 2383 008e 18       		.uleb128 0x18
+ 2384 008f 00       		.byte	0
+ 2385 0090 00       		.byte	0
+ 2386 0091 0B       		.uleb128 0xb
+ 2387 0092 34       		.uleb128 0x34
+ 2388 0093 00       		.byte	0
+ 2389 0094 03       		.uleb128 0x3
+ 2390 0095 08       		.uleb128 0x8
+ 2391 0096 3A       		.uleb128 0x3a
+ 2392 0097 0B       		.uleb128 0xb
+ 2393 0098 3B       		.uleb128 0x3b
+ 2394 0099 0B       		.uleb128 0xb
+ 2395 009a 49       		.uleb128 0x49
+ 2396 009b 13       		.uleb128 0x13
+ 2397 009c 02       		.uleb128 0x2
+ 2398 009d 18       		.uleb128 0x18
+ 2399 009e 00       		.byte	0
+ 2400 009f 00       		.byte	0
+ 2401 00a0 0C       		.uleb128 0xc
+ 2402 00a1 2E       		.uleb128 0x2e
+ 2403 00a2 01       		.byte	0x1
+ 2404 00a3 03       		.uleb128 0x3
+ 2405 00a4 0E       		.uleb128 0xe
+ 2406 00a5 3A       		.uleb128 0x3a
+ 2407 00a6 0B       		.uleb128 0xb
+ 2408 00a7 3B       		.uleb128 0x3b
+ 2409 00a8 0B       		.uleb128 0xb
+ 2410 00a9 27       		.uleb128 0x27
+ 2411 00aa 19       		.uleb128 0x19
+ 2412 00ab 49       		.uleb128 0x49
+ 2413 00ac 13       		.uleb128 0x13
+ 2414 00ad 11       		.uleb128 0x11
+ 2415 00ae 01       		.uleb128 0x1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 49
+
+
+ 2416 00af 12       		.uleb128 0x12
+ 2417 00b0 06       		.uleb128 0x6
+ 2418 00b1 40       		.uleb128 0x40
+ 2419 00b2 18       		.uleb128 0x18
+ 2420 00b3 9642     		.uleb128 0x2116
+ 2421 00b5 19       		.uleb128 0x19
+ 2422 00b6 01       		.uleb128 0x1
+ 2423 00b7 13       		.uleb128 0x13
+ 2424 00b8 00       		.byte	0
+ 2425 00b9 00       		.byte	0
+ 2426 00ba 0D       		.uleb128 0xd
+ 2427 00bb 05       		.uleb128 0x5
+ 2428 00bc 00       		.byte	0
+ 2429 00bd 03       		.uleb128 0x3
+ 2430 00be 08       		.uleb128 0x8
+ 2431 00bf 3A       		.uleb128 0x3a
+ 2432 00c0 0B       		.uleb128 0xb
+ 2433 00c1 3B       		.uleb128 0x3b
+ 2434 00c2 0B       		.uleb128 0xb
+ 2435 00c3 49       		.uleb128 0x49
+ 2436 00c4 13       		.uleb128 0x13
+ 2437 00c5 02       		.uleb128 0x2
+ 2438 00c6 18       		.uleb128 0x18
+ 2439 00c7 00       		.byte	0
+ 2440 00c8 00       		.byte	0
+ 2441 00c9 0E       		.uleb128 0xe
+ 2442 00ca 2E       		.uleb128 0x2e
+ 2443 00cb 01       		.byte	0x1
+ 2444 00cc 03       		.uleb128 0x3
+ 2445 00cd 0E       		.uleb128 0xe
+ 2446 00ce 3A       		.uleb128 0x3a
+ 2447 00cf 0B       		.uleb128 0xb
+ 2448 00d0 3B       		.uleb128 0x3b
+ 2449 00d1 0B       		.uleb128 0xb
+ 2450 00d2 27       		.uleb128 0x27
+ 2451 00d3 19       		.uleb128 0x19
+ 2452 00d4 11       		.uleb128 0x11
+ 2453 00d5 01       		.uleb128 0x1
+ 2454 00d6 12       		.uleb128 0x12
+ 2455 00d7 06       		.uleb128 0x6
+ 2456 00d8 40       		.uleb128 0x40
+ 2457 00d9 18       		.uleb128 0x18
+ 2458 00da 9642     		.uleb128 0x2116
+ 2459 00dc 19       		.uleb128 0x19
+ 2460 00dd 01       		.uleb128 0x1
+ 2461 00de 13       		.uleb128 0x13
+ 2462 00df 00       		.byte	0
+ 2463 00e0 00       		.byte	0
+ 2464 00e1 0F       		.uleb128 0xf
+ 2465 00e2 05       		.uleb128 0x5
+ 2466 00e3 00       		.byte	0
+ 2467 00e4 03       		.uleb128 0x3
+ 2468 00e5 0E       		.uleb128 0xe
+ 2469 00e6 3A       		.uleb128 0x3a
+ 2470 00e7 0B       		.uleb128 0xb
+ 2471 00e8 3B       		.uleb128 0x3b
+ 2472 00e9 0B       		.uleb128 0xb
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 50
+
+
+ 2473 00ea 49       		.uleb128 0x49
+ 2474 00eb 13       		.uleb128 0x13
+ 2475 00ec 02       		.uleb128 0x2
+ 2476 00ed 18       		.uleb128 0x18
+ 2477 00ee 00       		.byte	0
+ 2478 00ef 00       		.byte	0
+ 2479 00f0 10       		.uleb128 0x10
+ 2480 00f1 0F       		.uleb128 0xf
+ 2481 00f2 00       		.byte	0
+ 2482 00f3 0B       		.uleb128 0xb
+ 2483 00f4 0B       		.uleb128 0xb
+ 2484 00f5 49       		.uleb128 0x49
+ 2485 00f6 13       		.uleb128 0x13
+ 2486 00f7 00       		.byte	0
+ 2487 00f8 00       		.byte	0
+ 2488 00f9 11       		.uleb128 0x11
+ 2489 00fa 0B       		.uleb128 0xb
+ 2490 00fb 01       		.byte	0x1
+ 2491 00fc 11       		.uleb128 0x11
+ 2492 00fd 01       		.uleb128 0x1
+ 2493 00fe 12       		.uleb128 0x12
+ 2494 00ff 06       		.uleb128 0x6
+ 2495 0100 00       		.byte	0
+ 2496 0101 00       		.byte	0
+ 2497 0102 12       		.uleb128 0x12
+ 2498 0103 26       		.uleb128 0x26
+ 2499 0104 00       		.byte	0
+ 2500 0105 49       		.uleb128 0x49
+ 2501 0106 13       		.uleb128 0x13
+ 2502 0107 00       		.byte	0
+ 2503 0108 00       		.byte	0
+ 2504 0109 13       		.uleb128 0x13
+ 2505 010a 2E       		.uleb128 0x2e
+ 2506 010b 01       		.byte	0x1
+ 2507 010c 3F       		.uleb128 0x3f
+ 2508 010d 19       		.uleb128 0x19
+ 2509 010e 03       		.uleb128 0x3
+ 2510 010f 0E       		.uleb128 0xe
+ 2511 0110 3A       		.uleb128 0x3a
+ 2512 0111 0B       		.uleb128 0xb
+ 2513 0112 3B       		.uleb128 0x3b
+ 2514 0113 0B       		.uleb128 0xb
+ 2515 0114 27       		.uleb128 0x27
+ 2516 0115 19       		.uleb128 0x19
+ 2517 0116 49       		.uleb128 0x49
+ 2518 0117 13       		.uleb128 0x13
+ 2519 0118 11       		.uleb128 0x11
+ 2520 0119 01       		.uleb128 0x1
+ 2521 011a 12       		.uleb128 0x12
+ 2522 011b 06       		.uleb128 0x6
+ 2523 011c 40       		.uleb128 0x40
+ 2524 011d 18       		.uleb128 0x18
+ 2525 011e 9642     		.uleb128 0x2116
+ 2526 0120 19       		.uleb128 0x19
+ 2527 0121 01       		.uleb128 0x1
+ 2528 0122 13       		.uleb128 0x13
+ 2529 0123 00       		.byte	0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 51
+
+
+ 2530 0124 00       		.byte	0
+ 2531 0125 14       		.uleb128 0x14
+ 2532 0126 34       		.uleb128 0x34
+ 2533 0127 00       		.byte	0
+ 2534 0128 03       		.uleb128 0x3
+ 2535 0129 0E       		.uleb128 0xe
+ 2536 012a 3A       		.uleb128 0x3a
+ 2537 012b 0B       		.uleb128 0xb
+ 2538 012c 3B       		.uleb128 0x3b
+ 2539 012d 05       		.uleb128 0x5
+ 2540 012e 49       		.uleb128 0x49
+ 2541 012f 13       		.uleb128 0x13
+ 2542 0130 02       		.uleb128 0x2
+ 2543 0131 18       		.uleb128 0x18
+ 2544 0132 00       		.byte	0
+ 2545 0133 00       		.byte	0
+ 2546 0134 15       		.uleb128 0x15
+ 2547 0135 34       		.uleb128 0x34
+ 2548 0136 00       		.byte	0
+ 2549 0137 03       		.uleb128 0x3
+ 2550 0138 08       		.uleb128 0x8
+ 2551 0139 3A       		.uleb128 0x3a
+ 2552 013a 0B       		.uleb128 0xb
+ 2553 013b 3B       		.uleb128 0x3b
+ 2554 013c 05       		.uleb128 0x5
+ 2555 013d 49       		.uleb128 0x49
+ 2556 013e 13       		.uleb128 0x13
+ 2557 013f 02       		.uleb128 0x2
+ 2558 0140 18       		.uleb128 0x18
+ 2559 0141 00       		.byte	0
+ 2560 0142 00       		.byte	0
+ 2561 0143 16       		.uleb128 0x16
+ 2562 0144 34       		.uleb128 0x34
+ 2563 0145 00       		.byte	0
+ 2564 0146 03       		.uleb128 0x3
+ 2565 0147 0E       		.uleb128 0xe
+ 2566 0148 3A       		.uleb128 0x3a
+ 2567 0149 0B       		.uleb128 0xb
+ 2568 014a 3B       		.uleb128 0x3b
+ 2569 014b 05       		.uleb128 0x5
+ 2570 014c 49       		.uleb128 0x49
+ 2571 014d 13       		.uleb128 0x13
+ 2572 014e 3F       		.uleb128 0x3f
+ 2573 014f 19       		.uleb128 0x19
+ 2574 0150 3C       		.uleb128 0x3c
+ 2575 0151 19       		.uleb128 0x19
+ 2576 0152 00       		.byte	0
+ 2577 0153 00       		.byte	0
+ 2578 0154 00       		.byte	0
+ 2579              		.section	.debug_aranges,"",%progbits
+ 2580 0000 44000000 		.4byte	0x44
+ 2581 0004 0200     		.2byte	0x2
+ 2582 0006 00000000 		.4byte	.Ldebug_info0
+ 2583 000a 04       		.byte	0x4
+ 2584 000b 00       		.byte	0
+ 2585 000c 0000     		.2byte	0
+ 2586 000e 0000     		.2byte	0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 52
+
+
+ 2587 0010 00000000 		.4byte	.LFB64
+ 2588 0014 78010000 		.4byte	.LFE64-.LFB64
+ 2589 0018 00000000 		.4byte	.LFB65
+ 2590 001c 48000000 		.4byte	.LFE65-.LFB65
+ 2591 0020 00000000 		.4byte	.LFB66
+ 2592 0024 C0020000 		.4byte	.LFE66-.LFB66
+ 2593 0028 00000000 		.4byte	.LFB67
+ 2594 002c 3A000000 		.4byte	.LFE67-.LFB67
+ 2595 0030 00000000 		.4byte	.LFB68
+ 2596 0034 64020000 		.4byte	.LFE68-.LFB68
+ 2597 0038 00000000 		.4byte	.LFB69
+ 2598 003c 48010000 		.4byte	.LFE69-.LFB69
+ 2599 0040 00000000 		.4byte	0
+ 2600 0044 00000000 		.4byte	0
+ 2601              		.section	.debug_ranges,"",%progbits
+ 2602              	.Ldebug_ranges0:
+ 2603 0000 00000000 		.4byte	.LFB64
+ 2604 0004 78010000 		.4byte	.LFE64
+ 2605 0008 00000000 		.4byte	.LFB65
+ 2606 000c 48000000 		.4byte	.LFE65
+ 2607 0010 00000000 		.4byte	.LFB66
+ 2608 0014 C0020000 		.4byte	.LFE66
+ 2609 0018 00000000 		.4byte	.LFB67
+ 2610 001c 3A000000 		.4byte	.LFE67
+ 2611 0020 00000000 		.4byte	.LFB68
+ 2612 0024 64020000 		.4byte	.LFE68
+ 2613 0028 00000000 		.4byte	.LFB69
+ 2614 002c 48010000 		.4byte	.LFE69
+ 2615 0030 00000000 		.4byte	0
+ 2616 0034 00000000 		.4byte	0
+ 2617              		.section	.debug_line,"",%progbits
+ 2618              	.Ldebug_line0:
+ 2619 0000 84040000 		.section	.debug_str,"MS",%progbits,1
+ 2619      02003F01 
+ 2619      00000201 
+ 2619      FB0E0D00 
+ 2619      01010101 
+ 2620              	.LASF52:
+ 2621 0000 76616C69 		.ascii	"valid\000"
+ 2621      6400
+ 2622              	.LASF31:
+ 2623 0006 56345F70 		.ascii	"V4_pp\000"
+ 2623      7000
+ 2624              	.LASF57:
+ 2625 000c 626C6565 		.ascii	"bleed\000"
+ 2625      6400
+ 2626              	.LASF43:
+ 2627 0012 6C656674 		.ascii	"left_now\000"
+ 2627      5F6E6F77 
+ 2627      00
+ 2628              	.LASF2:
+ 2629 001b 73686F72 		.ascii	"short int\000"
+ 2629      7420696E 
+ 2629      7400
+ 2630              	.LASF35:
+ 2631 0025 73325F65 		.ascii	"s2_enter\000"
+ 2631      6E746572 
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 53
+
+
+ 2631      00
+ 2632              	.LASF21:
+ 2633 002e 73697A65 		.ascii	"sizetype\000"
+ 2633      74797065 
+ 2633      00
+ 2634              	.LASF72:
+ 2635 0037 433A5C55 		.ascii	"C:\\Users\\ylee818\\Documents\\GitHub\\COMPSYS301\\"
+ 2635      73657273 
+ 2635      5C796C65 
+ 2635      65383138 
+ 2635      5C446F63 
+ 2636 0064 42656E63 		.ascii	"Benchmarktest___combined\\Benchmarktest___combined\\"
+ 2636      686D6172 
+ 2636      6B746573 
+ 2636      745F5F5F 
+ 2636      636F6D62 
+ 2637 0096 70736F63 		.ascii	"psoc student pack\\psoc_code_base\\CS301_Class.cyds"
+ 2637      20737475 
+ 2637      64656E74 
+ 2637      20706163 
+ 2637      6B5C7073 
+ 2638 00c7 6E00     		.ascii	"n\000"
+ 2639              	.LASF70:
+ 2640 00c9 474E5520 		.ascii	"GNU C11 5.4.1 20160609 (release) [ARM/embedded-5-br"
+ 2640      43313120 
+ 2640      352E342E 
+ 2640      31203230 
+ 2640      31363036 
+ 2641 00fc 616E6368 		.ascii	"anch revision 237715] -mcpu=cortex-m3 -mthumb -g -O"
+ 2641      20726576 
+ 2641      6973696F 
+ 2641      6E203233 
+ 2641      37373135 
+ 2642 012f 30202D66 		.ascii	"0 -ffunction-sections -ffat-lto-objects\000"
+ 2642      66756E63 
+ 2642      74696F6E 
+ 2642      2D736563 
+ 2642      74696F6E 
+ 2643              	.LASF75:
+ 2644 0157 6D61696E 		.ascii	"main\000"
+ 2644      00
+ 2645              	.LASF4:
+ 2646 015c 5F5F7569 		.ascii	"__uint16_t\000"
+ 2646      6E743136 
+ 2646      5F7400
+ 2647              	.LASF18:
+ 2648 0167 646F7562 		.ascii	"double\000"
+ 2648      6C6500
+ 2649              	.LASF16:
+ 2650 016e 696E7436 		.ascii	"int64_t\000"
+ 2650      345F7400 
+ 2651              	.LASF13:
+ 2652 0176 75696E74 		.ascii	"uint8_t\000"
+ 2652      385F7400 
+ 2653              	.LASF25:
+ 2654 017e 72617732 		.ascii	"raw2\000"
+ 2654      00
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 54
+
+
+ 2655              	.LASF29:
+ 2656 0183 646D6D5F 		.ascii	"dmm_abs\000"
+ 2656      61627300 
+ 2657              	.LASF45:
+ 2658 018b 626F7468 		.ascii	"both_clear_now\000"
+ 2658      5F636C65 
+ 2658      61725F6E 
+ 2658      6F7700
+ 2659              	.LASF51:
+ 2660 019a 70695F73 		.ascii	"pi_step\000"
+ 2660      74657000 
+ 2661              	.LASF17:
+ 2662 01a2 666C6F61 		.ascii	"float\000"
+ 2662      7400
+ 2663              	.LASF10:
+ 2664 01a8 6C6F6E67 		.ascii	"long long int\000"
+ 2664      206C6F6E 
+ 2664      6720696E 
+ 2664      7400
+ 2665              	.LASF41:
+ 2666 01b6 61726D65 		.ascii	"armed\000"
+ 2666      6400
+ 2667              	.LASF19:
+ 2668 01bc 63686172 		.ascii	"char\000"
+ 2668      00
+ 2669              	.LASF38:
+ 2670 01c1 6465624C 		.ascii	"debL\000"
+ 2670      00
+ 2671              	.LASF23:
+ 2672 01c6 70695F74 		.ascii	"pi_t\000"
+ 2672      00
+ 2673              	.LASF7:
+ 2674 01cb 6C6F6E67 		.ascii	"long int\000"
+ 2674      20696E74 
+ 2674      00
+ 2675              	.LASF9:
+ 2676 01d4 5F5F696E 		.ascii	"__int64_t\000"
+ 2676      7436345F 
+ 2676      7400
+ 2677              	.LASF54:
+ 2678 01de 755F7261 		.ascii	"u_raw\000"
+ 2678      7700
+ 2679              	.LASF39:
+ 2680 01e4 64656252 		.ascii	"debR\000"
+ 2680      00
+ 2681              	.LASF42:
+ 2682 01e9 636C6561 		.ascii	"clear_cnt\000"
+ 2682      725F636E 
+ 2682      7400
+ 2683              	.LASF44:
+ 2684 01f3 72696768 		.ascii	"right_now\000"
+ 2684      745F6E6F 
+ 2684      7700
+ 2685              	.LASF3:
+ 2686 01fd 5F5F7569 		.ascii	"__uint8_t\000"
+ 2686      6E74385F 
+ 2686      7400
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 55
+
+
+ 2687              	.LASF61:
+ 2688 0207 73656E31 		.ascii	"sen1_on_line\000"
+ 2688      5F6F6E5F 
+ 2688      6C696E65 
+ 2688      00
+ 2689              	.LASF37:
+ 2690 0214 73325F65 		.ascii	"s2_exit\000"
+ 2690      78697400 
+ 2691              	.LASF1:
+ 2692 021c 756E7369 		.ascii	"unsigned char\000"
+ 2692      676E6564 
+ 2692      20636861 
+ 2692      7200
+ 2693              	.LASF24:
+ 2694 022a 72617731 		.ascii	"raw1\000"
+ 2694      00
+ 2695              	.LASF20:
+ 2696 022f 6C6F6E67 		.ascii	"long double\000"
+ 2696      20646F75 
+ 2696      626C6500 
+ 2697              	.LASF62:
+ 2698 023b 73656E32 		.ascii	"sen2_on_line\000"
+ 2698      5F6F6E5F 
+ 2698      6C696E65 
+ 2698      00
+ 2699              	.LASF68:
+ 2700 0248 675F7374 		.ascii	"g_stop_now\000"
+ 2700      6F705F6E 
+ 2700      6F7700
+ 2701              	.LASF63:
+ 2702 0253 73656E33 		.ascii	"sen3_on_line\000"
+ 2702      5F6F6E5F 
+ 2702      6C696E65 
+ 2702      00
+ 2703              	.LASF0:
+ 2704 0260 7369676E 		.ascii	"signed char\000"
+ 2704      65642063 
+ 2704      68617200 
+ 2705              	.LASF11:
+ 2706 026c 6C6F6E67 		.ascii	"long long unsigned int\000"
+ 2706      206C6F6E 
+ 2706      6720756E 
+ 2706      7369676E 
+ 2706      65642069 
+ 2707              	.LASF64:
+ 2708 0283 73656E34 		.ascii	"sen4_on_line\000"
+ 2708      5F6F6E5F 
+ 2708      6C696E65 
+ 2708      00
+ 2709              	.LASF12:
+ 2710 0290 756E7369 		.ascii	"unsigned int\000"
+ 2710      676E6564 
+ 2710      20696E74 
+ 2710      00
+ 2711              	.LASF33:
+ 2712 029d 56365F70 		.ascii	"V6_pp\000"
+ 2712      7000
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 56
+
+
+ 2713              	.LASF34:
+ 2714 02a3 73315F65 		.ascii	"s1_enter\000"
+ 2714      6E746572 
+ 2714      00
+ 2715              	.LASF65:
+ 2716 02ac 73656E35 		.ascii	"sen5_on_line\000"
+ 2716      5F6F6E5F 
+ 2716      6C696E65 
+ 2716      00
+ 2717              	.LASF50:
+ 2718 02b9 5F636C61 		.ascii	"_clampf\000"
+ 2718      6D706600 
+ 2719              	.LASF46:
+ 2720 02c1 6C656674 		.ascii	"left_stable\000"
+ 2720      5F737461 
+ 2720      626C6500 
+ 2721              	.LASF5:
+ 2722 02cd 73686F72 		.ascii	"short unsigned int\000"
+ 2722      7420756E 
+ 2722      7369676E 
+ 2722      65642069 
+ 2722      6E7400
+ 2723              	.LASF66:
+ 2724 02e0 73656E36 		.ascii	"sen6_on_line\000"
+ 2724      5F6F6E5F 
+ 2724      6C696E65 
+ 2724      00
+ 2725              	.LASF28:
+ 2726 02ed 6E756D5F 		.ascii	"num_abs\000"
+ 2726      61627300 
+ 2727              	.LASF59:
+ 2728 02f5 63656E74 		.ascii	"center_duty_est\000"
+ 2728      65725F64 
+ 2728      7574795F 
+ 2728      65737400 
+ 2729              	.LASF14:
+ 2730 0305 75696E74 		.ascii	"uint16_t\000"
+ 2730      31365F74 
+ 2730      00
+ 2731              	.LASF15:
+ 2732 030e 696E7433 		.ascii	"int32_t\000"
+ 2732      325F7400 
+ 2733              	.LASF36:
+ 2734 0316 73315F65 		.ascii	"s1_exit\000"
+ 2734      78697400 
+ 2735              	.LASF60:
+ 2736 031e 73746565 		.ascii	"steer\000"
+ 2736      7200
+ 2737              	.LASF58:
+ 2738 0324 5F426F6F 		.ascii	"_Bool\000"
+ 2738      6C00
+ 2739              	.LASF73:
+ 2740 032a 6973725F 		.ascii	"isr_qd_Handler\000"
+ 2740      71645F48 
+ 2740      616E646C 
+ 2740      657200
+ 2741              	.LASF30:
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 57
+
+
+ 2742 0339 646D6D5F 		.ascii	"dmm_signed\000"
+ 2742      7369676E 
+ 2742      656400
+ 2743              	.LASF22:
+ 2744 0344 745F6C6F 		.ascii	"t_loss\000"
+ 2744      737300
+ 2745              	.LASF53:
+ 2746 034b 695F6E65 		.ascii	"i_next\000"
+ 2746      787400
+ 2747              	.LASF71:
+ 2748 0352 6D61696E 		.ascii	"main.c\000"
+ 2748      2E6300
+ 2749              	.LASF8:
+ 2750 0359 6C6F6E67 		.ascii	"long unsigned int\000"
+ 2750      20756E73 
+ 2750      69676E65 
+ 2750      6420696E 
+ 2750      7400
+ 2751              	.LASF27:
+ 2752 036b 64617667 		.ascii	"davg_sign\000"
+ 2752      5F736967 
+ 2752      6E00
+ 2753              	.LASF74:
+ 2754 0375 6C696768 		.ascii	"light_sensors_update_and_maybe_request_turn\000"
+ 2754      745F7365 
+ 2754      6E736F72 
+ 2754      735F7570 
+ 2754      64617465 
+ 2755              	.LASF55:
+ 2756 03a1 7361745F 		.ascii	"sat_hi\000"
+ 2756      686900
+ 2757              	.LASF48:
+ 2758 03a8 616E795F 		.ascii	"any_now\000"
+ 2758      6E6F7700 
+ 2759              	.LASF6:
+ 2760 03b0 5F5F696E 		.ascii	"__int32_t\000"
+ 2760      7433325F 
+ 2760      7400
+ 2761              	.LASF49:
+ 2762 03ba 6E6F726D 		.ascii	"norm01_from_pp\000"
+ 2762      30315F66 
+ 2762      726F6D5F 
+ 2762      707000
+ 2763              	.LASF67:
+ 2764 03c9 675F6469 		.ascii	"g_direction\000"
+ 2764      72656374 
+ 2764      696F6E00 
+ 2765              	.LASF56:
+ 2766 03d5 7361745F 		.ascii	"sat_lo\000"
+ 2766      6C6F00
+ 2767              	.LASF40:
+ 2768 03dc 6C617463 		.ascii	"latched_any\000"
+ 2768      6865645F 
+ 2768      616E7900 
+ 2769              	.LASF32:
+ 2770 03e8 56355F70 		.ascii	"V5_pp\000"
+ 2770      7000
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccxLFXWH.s 			page 58
+
+
+ 2771              	.LASF69:
+ 2772 03ee 675F6469 		.ascii	"g_dist_mm\000"
+ 2772      73745F6D 
+ 2772      6D00
+ 2773              	.LASF76:
+ 2774 03f8 49544D5F 		.ascii	"ITM_RxBuffer\000"
+ 2774      52784275 
+ 2774      66666572 
+ 2774      00
+ 2775              	.LASF47:
+ 2776 0405 72696768 		.ascii	"right_stable\000"
+ 2776      745F7374 
+ 2776      61626C65 
+ 2776      00
+ 2777              	.LASF26:
+ 2778 0412 64617667 		.ascii	"davg_abs\000"
+ 2778      5F616273 
+ 2778      00
+ 2779              		.ident	"GCC: (GNU Tools for ARM Embedded Processors) 5.4.1 20160609 (release) [ARM/embedded-5-bran

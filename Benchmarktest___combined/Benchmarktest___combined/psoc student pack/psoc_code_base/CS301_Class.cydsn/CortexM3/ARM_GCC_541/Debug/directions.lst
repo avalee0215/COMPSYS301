@@ -1,0 +1,1029 @@
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 1
+
+
+   1              		.syntax unified
+   2              		.cpu cortex-m3
+   3              		.fpu softvfp
+   4              		.eabi_attribute 20, 1
+   5              		.eabi_attribute 21, 1
+   6              		.eabi_attribute 23, 3
+   7              		.eabi_attribute 24, 1
+   8              		.eabi_attribute 25, 1
+   9              		.eabi_attribute 26, 1
+  10              		.eabi_attribute 30, 6
+  11              		.eabi_attribute 34, 1
+  12              		.eabi_attribute 18, 4
+  13              		.thumb
+  14              		.syntax unified
+  15              		.file	"directions.c"
+  16              		.text
+  17              	.Ltext0:
+  18              		.cfi_sections	.debug_frame
+  19              		.section	.text.pivot_steer,"ax",%progbits
+  20              		.align	2
+  21              		.thumb
+  22              		.thumb_func
+  23              		.type	pivot_steer, %function
+  24              	pivot_steer:
+  25              	.LFB63:
+  26              		.file 1 "directions.c"
+   1:directions.c  **** #include <project.h>
+   2:directions.c  **** #include <stdint.h>
+   3:directions.c  **** #include "directions.h"
+   4:directions.c  **** #include "motor_s.h"
+   5:directions.c  **** 
+   6:directions.c  **** /* ================================
+   7:directions.c  ****  * Robot-specific PWM + enable
+   8:directions.c  ****  *  - Clock_PWM, PWM_1, PWM_2
+   9:directions.c  ****  *  - CONTROL pin: LOW = enable
+  10:directions.c  ****  *  - Sign map (typical from your build):
+  11:directions.c  ****  *      LEFT  forward  = +duty
+  12:directions.c  ****  *      RIGHT forward  = -duty
+  13:directions.c  ****  *    -> Pivot LEFT  = left reverse,  right forward
+  14:directions.c  ****  *    -> Pivot RIGHT = right reverse, left  forward
+  15:directions.c  ****  * Adjust RIGHT/LEFT signs below if your wiring differs.
+  16:directions.c  ****  * ================================ */
+  17:directions.c  **** 
+  18:directions.c  **** /* ===== Tunables (start here, then fine-tune on floor) ===== */
+  19:directions.c  **** #define TURN_SPEED_PC        28      // 10..40%
+  20:directions.c  **** #define TURN_TIME_MS         550     // ~90° at TURN_SPEED_PC (tune ±20–60 ms)
+  21:directions.c  **** #define STOP_BEFORE_MS       80      // settle before pivot
+  22:directions.c  **** #define BRAKE_AFTER_MS       90      // quick brake after pivot
+  23:directions.c  **** #define PWM_PERIOD_TICKS     200u    // must match your PWM config
+  24:directions.c  **** 
+  25:directions.c  **** /* NEW: small holdoff before we start the pivot.
+  26:directions.c  ****  * Lets straight-line control run ~10 ms longer after detection. */
+  27:directions.c  **** #define TURN_START_DELAY_MS  70
+  28:directions.c  **** 
+  29:directions.c  **** /* Polarity (forward direction) */
+  30:directions.c  **** #define RIGHT_MOTOR_SIGN     (-1)
+  31:directions.c  **** #define LEFT_MOTOR_SIGN      (+1)
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 2
+
+
+  32:directions.c  **** 
+  33:directions.c  **** static inline void pivot_steer(int steer_pc) {
+  27              		.loc 1 33 0
+  28              		.cfi_startproc
+  29              		@ args = 0, pretend = 0, frame = 8
+  30              		@ frame_needed = 1, uses_anonymous_args = 0
+  31 0000 80B5     		push	{r7, lr}
+  32              		.cfi_def_cfa_offset 8
+  33              		.cfi_offset 7, -8
+  34              		.cfi_offset 14, -4
+  35 0002 82B0     		sub	sp, sp, #8
+  36              		.cfi_def_cfa_offset 16
+  37 0004 00AF     		add	r7, sp, #0
+  38              		.cfi_def_cfa_register 7
+  39 0006 7860     		str	r0, [r7, #4]
+  34:directions.c  ****     set_motors_with_trim_and_steer(0, steer_pc);
+  40              		.loc 1 34 0
+  41 0008 7968     		ldr	r1, [r7, #4]
+  42 000a 0020     		movs	r0, #0
+  43 000c FFF7FEFF 		bl	set_motors_with_trim_and_steer
+  35:directions.c  **** }
+  44              		.loc 1 35 0
+  45 0010 00BF     		nop
+  46 0012 0837     		adds	r7, r7, #8
+  47              		.cfi_def_cfa_offset 8
+  48 0014 BD46     		mov	sp, r7
+  49              		.cfi_def_cfa_register 13
+  50              		@ sp needed
+  51 0016 80BD     		pop	{r7, pc}
+  52              		.cfi_endproc
+  53              	.LFE63:
+  54              		.size	pivot_steer, .-pivot_steer
+  55              		.section	.text.brake_quick,"ax",%progbits
+  56              		.align	2
+  57              		.thumb
+  58              		.thumb_func
+  59              		.type	brake_quick, %function
+  60              	brake_quick:
+  61              	.LFB64:
+  36:directions.c  **** 
+  37:directions.c  **** static void brake_quick(uint16_t ms, int base_pc){
+  62              		.loc 1 37 0
+  63              		.cfi_startproc
+  64              		@ args = 0, pretend = 0, frame = 16
+  65              		@ frame_needed = 1, uses_anonymous_args = 0
+  66 0000 80B5     		push	{r7, lr}
+  67              		.cfi_def_cfa_offset 8
+  68              		.cfi_offset 7, -8
+  69              		.cfi_offset 14, -4
+  70 0002 84B0     		sub	sp, sp, #16
+  71              		.cfi_def_cfa_offset 24
+  72 0004 00AF     		add	r7, sp, #0
+  73              		.cfi_def_cfa_register 7
+  74 0006 0346     		mov	r3, r0
+  75 0008 3960     		str	r1, [r7]
+  76 000a FB80     		strh	r3, [r7, #6]	@ movhi
+  38:directions.c  ****     int d = (base_pc < 8) ? 8 : base_pc;
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 3
+
+
+  77              		.loc 1 38 0
+  78 000c 3B68     		ldr	r3, [r7]
+  79 000e 082B     		cmp	r3, #8
+  80 0010 B8BF     		it	lt
+  81 0012 0823     		movlt	r3, #8
+  82 0014 FB60     		str	r3, [r7, #12]
+  39:directions.c  ****     set_motors_symmetric(-d);   
+  83              		.loc 1 39 0
+  84 0016 FB68     		ldr	r3, [r7, #12]
+  85 0018 5B42     		negs	r3, r3
+  86 001a 1846     		mov	r0, r3
+  87 001c FFF7FEFF 		bl	set_motors_symmetric
+  40:directions.c  ****     CyDelay(ms);
+  88              		.loc 1 40 0
+  89 0020 FB88     		ldrh	r3, [r7, #6]
+  90 0022 1846     		mov	r0, r3
+  91 0024 FFF7FEFF 		bl	CyDelay
+  41:directions.c  **** }
+  92              		.loc 1 41 0
+  93 0028 00BF     		nop
+  94 002a 1037     		adds	r7, r7, #16
+  95              		.cfi_def_cfa_offset 8
+  96 002c BD46     		mov	sp, r7
+  97              		.cfi_def_cfa_register 13
+  98              		@ sp needed
+  99 002e 80BD     		pop	{r7, pc}
+ 100              		.cfi_endproc
+ 101              	.LFE64:
+ 102              		.size	brake_quick, .-brake_quick
+ 103              		.section	.text.Directions_Init,"ax",%progbits
+ 104              		.align	2
+ 105              		.global	Directions_Init
+ 106              		.thumb
+ 107              		.thumb_func
+ 108              		.type	Directions_Init, %function
+ 109              	Directions_Init:
+ 110              	.LFB65:
+  42:directions.c  **** 
+  43:directions.c  **** void Directions_Init(void){
+ 111              		.loc 1 43 0
+ 112              		.cfi_startproc
+ 113              		@ args = 0, pretend = 0, frame = 0
+ 114              		@ frame_needed = 1, uses_anonymous_args = 0
+ 115              		@ link register save eliminated.
+ 116 0000 80B4     		push	{r7}
+ 117              		.cfi_def_cfa_offset 4
+ 118              		.cfi_offset 7, -4
+ 119 0002 00AF     		add	r7, sp, #0
+ 120              		.cfi_def_cfa_register 7
+  44:directions.c  ****     // nothing needed; safe to call anytime
+  45:directions.c  **** }
+ 121              		.loc 1 45 0
+ 122 0004 00BF     		nop
+ 123 0006 BD46     		mov	sp, r7
+ 124              		.cfi_def_cfa_register 13
+ 125              		@ sp needed
+ 126 0008 80BC     		pop	{r7}
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 4
+
+
+ 127              		.cfi_restore 7
+ 128              		.cfi_def_cfa_offset 0
+ 129 000a 7047     		bx	lr
+ 130              		.cfi_endproc
+ 131              	.LFE65:
+ 132              		.size	Directions_Init, .-Directions_Init
+ 133              		.section	.text.Directions_IsBusy,"ax",%progbits
+ 134              		.align	2
+ 135              		.global	Directions_IsBusy
+ 136              		.thumb
+ 137              		.thumb_func
+ 138              		.type	Directions_IsBusy, %function
+ 139              	Directions_IsBusy:
+ 140              	.LFB66:
+  46:directions.c  **** 
+  47:directions.c  **** bool Directions_IsBusy(void){
+ 141              		.loc 1 47 0
+ 142              		.cfi_startproc
+ 143              		@ args = 0, pretend = 0, frame = 0
+ 144              		@ frame_needed = 1, uses_anonymous_args = 0
+ 145              		@ link register save eliminated.
+ 146 0000 80B4     		push	{r7}
+ 147              		.cfi_def_cfa_offset 4
+ 148              		.cfi_offset 7, -4
+ 149 0002 00AF     		add	r7, sp, #0
+ 150              		.cfi_def_cfa_register 7
+  48:directions.c  ****     return false; // blocking implementation
+ 151              		.loc 1 48 0
+ 152 0004 0023     		movs	r3, #0
+  49:directions.c  **** }
+ 153              		.loc 1 49 0
+ 154 0006 1846     		mov	r0, r3
+ 155 0008 BD46     		mov	sp, r7
+ 156              		.cfi_def_cfa_register 13
+ 157              		@ sp needed
+ 158 000a 80BC     		pop	{r7}
+ 159              		.cfi_restore 7
+ 160              		.cfi_def_cfa_offset 0
+ 161 000c 7047     		bx	lr
+ 162              		.cfi_endproc
+ 163              	.LFE66:
+ 164              		.size	Directions_IsBusy, .-Directions_IsBusy
+ 165 000e 00BF     		.section	.text.Directions_Handle,"ax",%progbits
+ 166              		.align	2
+ 167              		.global	Directions_Handle
+ 168              		.thumb
+ 169              		.thumb_func
+ 170              		.type	Directions_Handle, %function
+ 171              	Directions_Handle:
+ 172              	.LFB67:
+  50:directions.c  **** 
+  51:directions.c  **** 
+  52:directions.c  **** void Directions_Handle(volatile uint8_t* gdir){
+ 173              		.loc 1 52 0
+ 174              		.cfi_startproc
+ 175              		@ args = 0, pretend = 0, frame = 8
+ 176              		@ frame_needed = 1, uses_anonymous_args = 0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 5
+
+
+ 177 0000 80B5     		push	{r7, lr}
+ 178              		.cfi_def_cfa_offset 8
+ 179              		.cfi_offset 7, -8
+ 180              		.cfi_offset 14, -4
+ 181 0002 82B0     		sub	sp, sp, #8
+ 182              		.cfi_def_cfa_offset 16
+ 183 0004 00AF     		add	r7, sp, #0
+ 184              		.cfi_def_cfa_register 7
+ 185 0006 7860     		str	r0, [r7, #4]
+  53:directions.c  ****     if (!gdir || *gdir==0u)return;
+ 186              		.loc 1 53 0
+ 187 0008 7B68     		ldr	r3, [r7, #4]
+ 188 000a 002B     		cmp	r3, #0
+ 189 000c 2DD0     		beq	.L12
+ 190              		.loc 1 53 0 is_stmt 0 discriminator 1
+ 191 000e 7B68     		ldr	r3, [r7, #4]
+ 192 0010 1B78     		ldrb	r3, [r3]
+ 193 0012 DBB2     		uxtb	r3, r3
+ 194 0014 002B     		cmp	r3, #0
+ 195 0016 28D0     		beq	.L12
+  54:directions.c  ****     
+  55:directions.c  ****     CyDelay(TURN_START_DELAY_MS);
+ 196              		.loc 1 55 0 is_stmt 1
+ 197 0018 4620     		movs	r0, #70
+ 198 001a FFF7FEFF 		bl	CyDelay
+  56:directions.c  ****     
+  57:directions.c  ****     set_motors_symmetric(0);
+ 199              		.loc 1 57 0
+ 200 001e 0020     		movs	r0, #0
+ 201 0020 FFF7FEFF 		bl	set_motors_symmetric
+  58:directions.c  ****     CyDelay(STOP_BEFORE_MS);
+ 202              		.loc 1 58 0
+ 203 0024 5020     		movs	r0, #80
+ 204 0026 FFF7FEFF 		bl	CyDelay
+  59:directions.c  ****     
+  60:directions.c  ****     if (*gdir == 1u) {                 // LEFT
+ 205              		.loc 1 60 0
+ 206 002a 7B68     		ldr	r3, [r7, #4]
+ 207 002c 1B78     		ldrb	r3, [r3]
+ 208 002e DBB2     		uxtb	r3, r3
+ 209 0030 012B     		cmp	r3, #1
+ 210 0032 07D1     		bne	.L10
+  61:directions.c  ****         pivot_steer(+TURN_SPEED_PC);
+ 211              		.loc 1 61 0
+ 212 0034 1C20     		movs	r0, #28
+ 213 0036 FFF7FEFF 		bl	pivot_steer
+  62:directions.c  ****         CyDelay(TURN_TIME_MS);
+ 214              		.loc 1 62 0
+ 215 003a 40F22620 		movw	r0, #550
+ 216 003e FFF7FEFF 		bl	CyDelay
+ 217 0042 07E0     		b	.L11
+ 218              	.L10:
+  63:directions.c  ****     } else {                            // RIGHT
+  64:directions.c  ****         pivot_steer(-TURN_SPEED_PC);
+ 219              		.loc 1 64 0
+ 220 0044 6FF01B00 		mvn	r0, #27
+ 221 0048 FFF7FEFF 		bl	pivot_steer
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 6
+
+
+  65:directions.c  ****         CyDelay(TURN_TIME_MS);
+ 222              		.loc 1 65 0
+ 223 004c 40F22620 		movw	r0, #550
+ 224 0050 FFF7FEFF 		bl	CyDelay
+ 225              	.L11:
+  66:directions.c  ****     }
+  67:directions.c  ****     brake_quick(BRAKE_AFTER_MS, TURN_SPEED_PC);
+ 226              		.loc 1 67 0
+ 227 0054 1C21     		movs	r1, #28
+ 228 0056 5A20     		movs	r0, #90
+ 229 0058 FFF7FEFF 		bl	brake_quick
+  68:directions.c  ****     set_motors_symmetric(0);
+ 230              		.loc 1 68 0
+ 231 005c 0020     		movs	r0, #0
+ 232 005e FFF7FEFF 		bl	set_motors_symmetric
+  69:directions.c  ****     
+  70:directions.c  ****         *gdir = 0u;            // back to straight mode
+ 233              		.loc 1 70 0
+ 234 0062 7B68     		ldr	r3, [r7, #4]
+ 235 0064 0022     		movs	r2, #0
+ 236 0066 1A70     		strb	r2, [r3]
+ 237 0068 00E0     		b	.L6
+ 238              	.L12:
+  53:directions.c  ****     
+ 239              		.loc 1 53 0
+ 240 006a 00BF     		nop
+ 241              	.L6:
+  71:directions.c  ****     
+  72:directions.c  **** }
+ 242              		.loc 1 72 0
+ 243 006c 0837     		adds	r7, r7, #8
+ 244              		.cfi_def_cfa_offset 8
+ 245 006e BD46     		mov	sp, r7
+ 246              		.cfi_def_cfa_register 13
+ 247              		@ sp needed
+ 248 0070 80BD     		pop	{r7, pc}
+ 249              		.cfi_endproc
+ 250              	.LFE67:
+ 251              		.size	Directions_Handle, .-Directions_Handle
+ 252 0072 00BF     		.text
+ 253              	.Letext0:
+ 254              		.file 2 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 255              		.file 3 "c:\\program files (x86)\\cypress\\psoc creator\\4.2\\psoc creator\\import\\gnu\\arm\\5.4.
+ 256              		.file 4 "Generated_Source\\PSoC5/core_cm3.h"
+ 257              		.section	.debug_info,"",%progbits
+ 258              	.Ldebug_info0:
+ 259 0000 9B010000 		.4byte	0x19b
+ 260 0004 0400     		.2byte	0x4
+ 261 0006 00000000 		.4byte	.Ldebug_abbrev0
+ 262 000a 04       		.byte	0x4
+ 263 000b 01       		.uleb128 0x1
+ 264 000c 0A000000 		.4byte	.LASF26
+ 265 0010 0C       		.byte	0xc
+ 266 0011 30010000 		.4byte	.LASF27
+ 267 0015 B0010000 		.4byte	.LASF28
+ 268 0019 00000000 		.4byte	.Ldebug_ranges0+0
+ 269 001d 00000000 		.4byte	0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 7
+
+
+ 270 0021 00000000 		.4byte	.Ldebug_line0
+ 271 0025 02       		.uleb128 0x2
+ 272 0026 01       		.byte	0x1
+ 273 0027 06       		.byte	0x6
+ 274 0028 73020000 		.4byte	.LASF0
+ 275 002c 03       		.uleb128 0x3
+ 276 002d 00000000 		.4byte	.LASF3
+ 277 0031 02       		.byte	0x2
+ 278 0032 1D       		.byte	0x1d
+ 279 0033 37000000 		.4byte	0x37
+ 280 0037 02       		.uleb128 0x2
+ 281 0038 01       		.byte	0x1
+ 282 0039 08       		.byte	0x8
+ 283 003a C8000000 		.4byte	.LASF1
+ 284 003e 02       		.uleb128 0x2
+ 285 003f 02       		.byte	0x2
+ 286 0040 05       		.byte	0x5
+ 287 0041 42020000 		.4byte	.LASF2
+ 288 0045 03       		.uleb128 0x3
+ 289 0046 3D010000 		.4byte	.LASF4
+ 290 004a 02       		.byte	0x2
+ 291 004b 2B       		.byte	0x2b
+ 292 004c 50000000 		.4byte	0x50
+ 293 0050 02       		.uleb128 0x2
+ 294 0051 02       		.byte	0x2
+ 295 0052 07       		.byte	0x7
+ 296 0053 F4000000 		.4byte	.LASF5
+ 297 0057 03       		.uleb128 0x3
+ 298 0058 98000000 		.4byte	.LASF6
+ 299 005c 02       		.byte	0x2
+ 300 005d 3F       		.byte	0x3f
+ 301 005e 62000000 		.4byte	0x62
+ 302 0062 02       		.uleb128 0x2
+ 303 0063 04       		.byte	0x4
+ 304 0064 05       		.byte	0x5
+ 305 0065 A2000000 		.4byte	.LASF7
+ 306 0069 02       		.uleb128 0x2
+ 307 006a 04       		.byte	0x4
+ 308 006b 07       		.byte	0x7
+ 309 006c D6000000 		.4byte	.LASF8
+ 310 0070 02       		.uleb128 0x2
+ 311 0071 08       		.byte	0x8
+ 312 0072 05       		.byte	0x5
+ 313 0073 8C010000 		.4byte	.LASF9
+ 314 0077 02       		.uleb128 0x2
+ 315 0078 08       		.byte	0x8
+ 316 0079 07       		.byte	0x7
+ 317 007a 5C010000 		.4byte	.LASF10
+ 318 007e 04       		.uleb128 0x4
+ 319 007f 04       		.byte	0x4
+ 320 0080 05       		.byte	0x5
+ 321 0081 696E7400 		.ascii	"int\000"
+ 322 0085 02       		.uleb128 0x2
+ 323 0086 04       		.byte	0x4
+ 324 0087 07       		.byte	0x7
+ 325 0088 4F010000 		.4byte	.LASF11
+ 326 008c 03       		.uleb128 0x3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 8
+
+
+ 327 008d 73010000 		.4byte	.LASF12
+ 328 0091 03       		.byte	0x3
+ 329 0092 18       		.byte	0x18
+ 330 0093 2C000000 		.4byte	0x2c
+ 331 0097 03       		.uleb128 0x3
+ 332 0098 4C020000 		.4byte	.LASF13
+ 333 009c 03       		.byte	0x3
+ 334 009d 24       		.byte	0x24
+ 335 009e 45000000 		.4byte	0x45
+ 336 00a2 03       		.uleb128 0x3
+ 337 00a3 7B010000 		.4byte	.LASF14
+ 338 00a7 03       		.byte	0x3
+ 339 00a8 2C       		.byte	0x2c
+ 340 00a9 57000000 		.4byte	0x57
+ 341 00ad 02       		.uleb128 0x2
+ 342 00ae 04       		.byte	0x4
+ 343 00af 04       		.byte	0x4
+ 344 00b0 BD000000 		.4byte	.LASF15
+ 345 00b4 02       		.uleb128 0x2
+ 346 00b5 08       		.byte	0x8
+ 347 00b6 04       		.byte	0x4
+ 348 00b7 48010000 		.4byte	.LASF16
+ 349 00bb 02       		.uleb128 0x2
+ 350 00bc 01       		.byte	0x1
+ 351 00bd 08       		.byte	0x8
+ 352 00be A2010000 		.4byte	.LASF17
+ 353 00c2 02       		.uleb128 0x2
+ 354 00c3 08       		.byte	0x8
+ 355 00c4 04       		.byte	0x4
+ 356 00c5 67020000 		.4byte	.LASF18
+ 357 00c9 02       		.uleb128 0x2
+ 358 00ca 04       		.byte	0x4
+ 359 00cb 07       		.byte	0x7
+ 360 00cc 83010000 		.4byte	.LASF19
+ 361 00d0 05       		.uleb128 0x5
+ 362 00d1 8C000000 		.4byte	0x8c
+ 363 00d5 06       		.uleb128 0x6
+ 364 00d6 E8000000 		.4byte	.LASF20
+ 365 00da 01       		.byte	0x1
+ 366 00db 21       		.byte	0x21
+ 367 00dc 00000000 		.4byte	.LFB63
+ 368 00e0 18000000 		.4byte	.LFE63-.LFB63
+ 369 00e4 01       		.uleb128 0x1
+ 370 00e5 9C       		.byte	0x9c
+ 371 00e6 F9000000 		.4byte	0xf9
+ 372 00ea 07       		.uleb128 0x7
+ 373 00eb A7010000 		.4byte	.LASF22
+ 374 00ef 01       		.byte	0x1
+ 375 00f0 21       		.byte	0x21
+ 376 00f1 7E000000 		.4byte	0x7e
+ 377 00f5 02       		.uleb128 0x2
+ 378 00f6 91       		.byte	0x91
+ 379 00f7 74       		.sleb128 -12
+ 380 00f8 00       		.byte	0
+ 381 00f9 06       		.uleb128 0x6
+ 382 00fa 07010000 		.4byte	.LASF21
+ 383 00fe 01       		.byte	0x1
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 9
+
+
+ 384 00ff 25       		.byte	0x25
+ 385 0100 00000000 		.4byte	.LFB64
+ 386 0104 30000000 		.4byte	.LFE64-.LFB64
+ 387 0108 01       		.uleb128 0x1
+ 388 0109 9C       		.byte	0x9c
+ 389 010a 36010000 		.4byte	0x136
+ 390 010e 08       		.uleb128 0x8
+ 391 010f 6D7300   		.ascii	"ms\000"
+ 392 0112 01       		.byte	0x1
+ 393 0113 25       		.byte	0x25
+ 394 0114 97000000 		.4byte	0x97
+ 395 0118 02       		.uleb128 0x2
+ 396 0119 91       		.byte	0x91
+ 397 011a 6E       		.sleb128 -18
+ 398 011b 07       		.uleb128 0x7
+ 399 011c 9A010000 		.4byte	.LASF23
+ 400 0120 01       		.byte	0x1
+ 401 0121 25       		.byte	0x25
+ 402 0122 7E000000 		.4byte	0x7e
+ 403 0126 02       		.uleb128 0x2
+ 404 0127 91       		.byte	0x91
+ 405 0128 68       		.sleb128 -24
+ 406 0129 09       		.uleb128 0x9
+ 407 012a 6400     		.ascii	"d\000"
+ 408 012c 01       		.byte	0x1
+ 409 012d 26       		.byte	0x26
+ 410 012e 7E000000 		.4byte	0x7e
+ 411 0132 02       		.uleb128 0x2
+ 412 0133 91       		.byte	0x91
+ 413 0134 74       		.sleb128 -12
+ 414 0135 00       		.byte	0
+ 415 0136 0A       		.uleb128 0xa
+ 416 0137 13010000 		.4byte	.LASF29
+ 417 013b 01       		.byte	0x1
+ 418 013c 2B       		.byte	0x2b
+ 419 013d 00000000 		.4byte	.LFB65
+ 420 0141 0C000000 		.4byte	.LFE65-.LFB65
+ 421 0145 01       		.uleb128 0x1
+ 422 0146 9C       		.byte	0x9c
+ 423 0147 0B       		.uleb128 0xb
+ 424 0148 55020000 		.4byte	.LASF30
+ 425 014c 01       		.byte	0x1
+ 426 014d 2F       		.byte	0x2f
+ 427 014e 5C010000 		.4byte	0x15c
+ 428 0152 00000000 		.4byte	.LFB66
+ 429 0156 0E000000 		.4byte	.LFE66-.LFB66
+ 430 015a 01       		.uleb128 0x1
+ 431 015b 9C       		.byte	0x9c
+ 432 015c 02       		.uleb128 0x2
+ 433 015d 01       		.byte	0x1
+ 434 015e 02       		.byte	0x2
+ 435 015f 7F020000 		.4byte	.LASF24
+ 436 0163 0C       		.uleb128 0xc
+ 437 0164 AB000000 		.4byte	.LASF31
+ 438 0168 01       		.byte	0x1
+ 439 0169 34       		.byte	0x34
+ 440 016a 00000000 		.4byte	.LFB67
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 10
+
+
+ 441 016e 72000000 		.4byte	.LFE67-.LFB67
+ 442 0172 01       		.uleb128 0x1
+ 443 0173 9C       		.byte	0x9c
+ 444 0174 87010000 		.4byte	0x187
+ 445 0178 07       		.uleb128 0x7
+ 446 0179 C3000000 		.4byte	.LASF25
+ 447 017d 01       		.byte	0x1
+ 448 017e 34       		.byte	0x34
+ 449 017f 87010000 		.4byte	0x187
+ 450 0183 02       		.uleb128 0x2
+ 451 0184 91       		.byte	0x91
+ 452 0185 74       		.sleb128 -12
+ 453 0186 00       		.byte	0
+ 454 0187 0D       		.uleb128 0xd
+ 455 0188 04       		.byte	0x4
+ 456 0189 D0000000 		.4byte	0xd0
+ 457 018d 0E       		.uleb128 0xe
+ 458 018e 23010000 		.4byte	.LASF32
+ 459 0192 04       		.byte	0x4
+ 460 0193 1207     		.2byte	0x712
+ 461 0195 99010000 		.4byte	0x199
+ 462 0199 05       		.uleb128 0x5
+ 463 019a A2000000 		.4byte	0xa2
+ 464 019e 00       		.byte	0
+ 465              		.section	.debug_abbrev,"",%progbits
+ 466              	.Ldebug_abbrev0:
+ 467 0000 01       		.uleb128 0x1
+ 468 0001 11       		.uleb128 0x11
+ 469 0002 01       		.byte	0x1
+ 470 0003 25       		.uleb128 0x25
+ 471 0004 0E       		.uleb128 0xe
+ 472 0005 13       		.uleb128 0x13
+ 473 0006 0B       		.uleb128 0xb
+ 474 0007 03       		.uleb128 0x3
+ 475 0008 0E       		.uleb128 0xe
+ 476 0009 1B       		.uleb128 0x1b
+ 477 000a 0E       		.uleb128 0xe
+ 478 000b 55       		.uleb128 0x55
+ 479 000c 17       		.uleb128 0x17
+ 480 000d 11       		.uleb128 0x11
+ 481 000e 01       		.uleb128 0x1
+ 482 000f 10       		.uleb128 0x10
+ 483 0010 17       		.uleb128 0x17
+ 484 0011 00       		.byte	0
+ 485 0012 00       		.byte	0
+ 486 0013 02       		.uleb128 0x2
+ 487 0014 24       		.uleb128 0x24
+ 488 0015 00       		.byte	0
+ 489 0016 0B       		.uleb128 0xb
+ 490 0017 0B       		.uleb128 0xb
+ 491 0018 3E       		.uleb128 0x3e
+ 492 0019 0B       		.uleb128 0xb
+ 493 001a 03       		.uleb128 0x3
+ 494 001b 0E       		.uleb128 0xe
+ 495 001c 00       		.byte	0
+ 496 001d 00       		.byte	0
+ 497 001e 03       		.uleb128 0x3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 11
+
+
+ 498 001f 16       		.uleb128 0x16
+ 499 0020 00       		.byte	0
+ 500 0021 03       		.uleb128 0x3
+ 501 0022 0E       		.uleb128 0xe
+ 502 0023 3A       		.uleb128 0x3a
+ 503 0024 0B       		.uleb128 0xb
+ 504 0025 3B       		.uleb128 0x3b
+ 505 0026 0B       		.uleb128 0xb
+ 506 0027 49       		.uleb128 0x49
+ 507 0028 13       		.uleb128 0x13
+ 508 0029 00       		.byte	0
+ 509 002a 00       		.byte	0
+ 510 002b 04       		.uleb128 0x4
+ 511 002c 24       		.uleb128 0x24
+ 512 002d 00       		.byte	0
+ 513 002e 0B       		.uleb128 0xb
+ 514 002f 0B       		.uleb128 0xb
+ 515 0030 3E       		.uleb128 0x3e
+ 516 0031 0B       		.uleb128 0xb
+ 517 0032 03       		.uleb128 0x3
+ 518 0033 08       		.uleb128 0x8
+ 519 0034 00       		.byte	0
+ 520 0035 00       		.byte	0
+ 521 0036 05       		.uleb128 0x5
+ 522 0037 35       		.uleb128 0x35
+ 523 0038 00       		.byte	0
+ 524 0039 49       		.uleb128 0x49
+ 525 003a 13       		.uleb128 0x13
+ 526 003b 00       		.byte	0
+ 527 003c 00       		.byte	0
+ 528 003d 06       		.uleb128 0x6
+ 529 003e 2E       		.uleb128 0x2e
+ 530 003f 01       		.byte	0x1
+ 531 0040 03       		.uleb128 0x3
+ 532 0041 0E       		.uleb128 0xe
+ 533 0042 3A       		.uleb128 0x3a
+ 534 0043 0B       		.uleb128 0xb
+ 535 0044 3B       		.uleb128 0x3b
+ 536 0045 0B       		.uleb128 0xb
+ 537 0046 27       		.uleb128 0x27
+ 538 0047 19       		.uleb128 0x19
+ 539 0048 11       		.uleb128 0x11
+ 540 0049 01       		.uleb128 0x1
+ 541 004a 12       		.uleb128 0x12
+ 542 004b 06       		.uleb128 0x6
+ 543 004c 40       		.uleb128 0x40
+ 544 004d 18       		.uleb128 0x18
+ 545 004e 9642     		.uleb128 0x2116
+ 546 0050 19       		.uleb128 0x19
+ 547 0051 01       		.uleb128 0x1
+ 548 0052 13       		.uleb128 0x13
+ 549 0053 00       		.byte	0
+ 550 0054 00       		.byte	0
+ 551 0055 07       		.uleb128 0x7
+ 552 0056 05       		.uleb128 0x5
+ 553 0057 00       		.byte	0
+ 554 0058 03       		.uleb128 0x3
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 12
+
+
+ 555 0059 0E       		.uleb128 0xe
+ 556 005a 3A       		.uleb128 0x3a
+ 557 005b 0B       		.uleb128 0xb
+ 558 005c 3B       		.uleb128 0x3b
+ 559 005d 0B       		.uleb128 0xb
+ 560 005e 49       		.uleb128 0x49
+ 561 005f 13       		.uleb128 0x13
+ 562 0060 02       		.uleb128 0x2
+ 563 0061 18       		.uleb128 0x18
+ 564 0062 00       		.byte	0
+ 565 0063 00       		.byte	0
+ 566 0064 08       		.uleb128 0x8
+ 567 0065 05       		.uleb128 0x5
+ 568 0066 00       		.byte	0
+ 569 0067 03       		.uleb128 0x3
+ 570 0068 08       		.uleb128 0x8
+ 571 0069 3A       		.uleb128 0x3a
+ 572 006a 0B       		.uleb128 0xb
+ 573 006b 3B       		.uleb128 0x3b
+ 574 006c 0B       		.uleb128 0xb
+ 575 006d 49       		.uleb128 0x49
+ 576 006e 13       		.uleb128 0x13
+ 577 006f 02       		.uleb128 0x2
+ 578 0070 18       		.uleb128 0x18
+ 579 0071 00       		.byte	0
+ 580 0072 00       		.byte	0
+ 581 0073 09       		.uleb128 0x9
+ 582 0074 34       		.uleb128 0x34
+ 583 0075 00       		.byte	0
+ 584 0076 03       		.uleb128 0x3
+ 585 0077 08       		.uleb128 0x8
+ 586 0078 3A       		.uleb128 0x3a
+ 587 0079 0B       		.uleb128 0xb
+ 588 007a 3B       		.uleb128 0x3b
+ 589 007b 0B       		.uleb128 0xb
+ 590 007c 49       		.uleb128 0x49
+ 591 007d 13       		.uleb128 0x13
+ 592 007e 02       		.uleb128 0x2
+ 593 007f 18       		.uleb128 0x18
+ 594 0080 00       		.byte	0
+ 595 0081 00       		.byte	0
+ 596 0082 0A       		.uleb128 0xa
+ 597 0083 2E       		.uleb128 0x2e
+ 598 0084 00       		.byte	0
+ 599 0085 3F       		.uleb128 0x3f
+ 600 0086 19       		.uleb128 0x19
+ 601 0087 03       		.uleb128 0x3
+ 602 0088 0E       		.uleb128 0xe
+ 603 0089 3A       		.uleb128 0x3a
+ 604 008a 0B       		.uleb128 0xb
+ 605 008b 3B       		.uleb128 0x3b
+ 606 008c 0B       		.uleb128 0xb
+ 607 008d 27       		.uleb128 0x27
+ 608 008e 19       		.uleb128 0x19
+ 609 008f 11       		.uleb128 0x11
+ 610 0090 01       		.uleb128 0x1
+ 611 0091 12       		.uleb128 0x12
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 13
+
+
+ 612 0092 06       		.uleb128 0x6
+ 613 0093 40       		.uleb128 0x40
+ 614 0094 18       		.uleb128 0x18
+ 615 0095 9742     		.uleb128 0x2117
+ 616 0097 19       		.uleb128 0x19
+ 617 0098 00       		.byte	0
+ 618 0099 00       		.byte	0
+ 619 009a 0B       		.uleb128 0xb
+ 620 009b 2E       		.uleb128 0x2e
+ 621 009c 00       		.byte	0
+ 622 009d 3F       		.uleb128 0x3f
+ 623 009e 19       		.uleb128 0x19
+ 624 009f 03       		.uleb128 0x3
+ 625 00a0 0E       		.uleb128 0xe
+ 626 00a1 3A       		.uleb128 0x3a
+ 627 00a2 0B       		.uleb128 0xb
+ 628 00a3 3B       		.uleb128 0x3b
+ 629 00a4 0B       		.uleb128 0xb
+ 630 00a5 27       		.uleb128 0x27
+ 631 00a6 19       		.uleb128 0x19
+ 632 00a7 49       		.uleb128 0x49
+ 633 00a8 13       		.uleb128 0x13
+ 634 00a9 11       		.uleb128 0x11
+ 635 00aa 01       		.uleb128 0x1
+ 636 00ab 12       		.uleb128 0x12
+ 637 00ac 06       		.uleb128 0x6
+ 638 00ad 40       		.uleb128 0x40
+ 639 00ae 18       		.uleb128 0x18
+ 640 00af 9742     		.uleb128 0x2117
+ 641 00b1 19       		.uleb128 0x19
+ 642 00b2 00       		.byte	0
+ 643 00b3 00       		.byte	0
+ 644 00b4 0C       		.uleb128 0xc
+ 645 00b5 2E       		.uleb128 0x2e
+ 646 00b6 01       		.byte	0x1
+ 647 00b7 3F       		.uleb128 0x3f
+ 648 00b8 19       		.uleb128 0x19
+ 649 00b9 03       		.uleb128 0x3
+ 650 00ba 0E       		.uleb128 0xe
+ 651 00bb 3A       		.uleb128 0x3a
+ 652 00bc 0B       		.uleb128 0xb
+ 653 00bd 3B       		.uleb128 0x3b
+ 654 00be 0B       		.uleb128 0xb
+ 655 00bf 27       		.uleb128 0x27
+ 656 00c0 19       		.uleb128 0x19
+ 657 00c1 11       		.uleb128 0x11
+ 658 00c2 01       		.uleb128 0x1
+ 659 00c3 12       		.uleb128 0x12
+ 660 00c4 06       		.uleb128 0x6
+ 661 00c5 40       		.uleb128 0x40
+ 662 00c6 18       		.uleb128 0x18
+ 663 00c7 9642     		.uleb128 0x2116
+ 664 00c9 19       		.uleb128 0x19
+ 665 00ca 01       		.uleb128 0x1
+ 666 00cb 13       		.uleb128 0x13
+ 667 00cc 00       		.byte	0
+ 668 00cd 00       		.byte	0
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 14
+
+
+ 669 00ce 0D       		.uleb128 0xd
+ 670 00cf 0F       		.uleb128 0xf
+ 671 00d0 00       		.byte	0
+ 672 00d1 0B       		.uleb128 0xb
+ 673 00d2 0B       		.uleb128 0xb
+ 674 00d3 49       		.uleb128 0x49
+ 675 00d4 13       		.uleb128 0x13
+ 676 00d5 00       		.byte	0
+ 677 00d6 00       		.byte	0
+ 678 00d7 0E       		.uleb128 0xe
+ 679 00d8 34       		.uleb128 0x34
+ 680 00d9 00       		.byte	0
+ 681 00da 03       		.uleb128 0x3
+ 682 00db 0E       		.uleb128 0xe
+ 683 00dc 3A       		.uleb128 0x3a
+ 684 00dd 0B       		.uleb128 0xb
+ 685 00de 3B       		.uleb128 0x3b
+ 686 00df 05       		.uleb128 0x5
+ 687 00e0 49       		.uleb128 0x49
+ 688 00e1 13       		.uleb128 0x13
+ 689 00e2 3F       		.uleb128 0x3f
+ 690 00e3 19       		.uleb128 0x19
+ 691 00e4 3C       		.uleb128 0x3c
+ 692 00e5 19       		.uleb128 0x19
+ 693 00e6 00       		.byte	0
+ 694 00e7 00       		.byte	0
+ 695 00e8 00       		.byte	0
+ 696              		.section	.debug_aranges,"",%progbits
+ 697 0000 3C000000 		.4byte	0x3c
+ 698 0004 0200     		.2byte	0x2
+ 699 0006 00000000 		.4byte	.Ldebug_info0
+ 700 000a 04       		.byte	0x4
+ 701 000b 00       		.byte	0
+ 702 000c 0000     		.2byte	0
+ 703 000e 0000     		.2byte	0
+ 704 0010 00000000 		.4byte	.LFB63
+ 705 0014 18000000 		.4byte	.LFE63-.LFB63
+ 706 0018 00000000 		.4byte	.LFB64
+ 707 001c 30000000 		.4byte	.LFE64-.LFB64
+ 708 0020 00000000 		.4byte	.LFB65
+ 709 0024 0C000000 		.4byte	.LFE65-.LFB65
+ 710 0028 00000000 		.4byte	.LFB66
+ 711 002c 0E000000 		.4byte	.LFE66-.LFB66
+ 712 0030 00000000 		.4byte	.LFB67
+ 713 0034 72000000 		.4byte	.LFE67-.LFB67
+ 714 0038 00000000 		.4byte	0
+ 715 003c 00000000 		.4byte	0
+ 716              		.section	.debug_ranges,"",%progbits
+ 717              	.Ldebug_ranges0:
+ 718 0000 00000000 		.4byte	.LFB63
+ 719 0004 18000000 		.4byte	.LFE63
+ 720 0008 00000000 		.4byte	.LFB64
+ 721 000c 30000000 		.4byte	.LFE64
+ 722 0010 00000000 		.4byte	.LFB65
+ 723 0014 0C000000 		.4byte	.LFE65
+ 724 0018 00000000 		.4byte	.LFB66
+ 725 001c 0E000000 		.4byte	.LFE66
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 15
+
+
+ 726 0020 00000000 		.4byte	.LFB67
+ 727 0024 72000000 		.4byte	.LFE67
+ 728 0028 00000000 		.4byte	0
+ 729 002c 00000000 		.4byte	0
+ 730              		.section	.debug_line,"",%progbits
+ 731              	.Ldebug_line0:
+ 732 0000 B8010000 		.section	.debug_str,"MS",%progbits,1
+ 732      02004501 
+ 732      00000201 
+ 732      FB0E0D00 
+ 732      01010101 
+ 733              	.LASF3:
+ 734 0000 5F5F7569 		.ascii	"__uint8_t\000"
+ 734      6E74385F 
+ 734      7400
+ 735              	.LASF26:
+ 736 000a 474E5520 		.ascii	"GNU C11 5.4.1 20160609 (release) [ARM/embedded-5-br"
+ 736      43313120 
+ 736      352E342E 
+ 736      31203230 
+ 736      31363036 
+ 737 003d 616E6368 		.ascii	"anch revision 237715] -mcpu=cortex-m3 -mthumb -g -O"
+ 737      20726576 
+ 737      6973696F 
+ 737      6E203233 
+ 737      37373135 
+ 738 0070 30202D66 		.ascii	"0 -ffunction-sections -ffat-lto-objects\000"
+ 738      66756E63 
+ 738      74696F6E 
+ 738      2D736563 
+ 738      74696F6E 
+ 739              	.LASF6:
+ 740 0098 5F5F696E 		.ascii	"__int32_t\000"
+ 740      7433325F 
+ 740      7400
+ 741              	.LASF7:
+ 742 00a2 6C6F6E67 		.ascii	"long int\000"
+ 742      20696E74 
+ 742      00
+ 743              	.LASF31:
+ 744 00ab 44697265 		.ascii	"Directions_Handle\000"
+ 744      6374696F 
+ 744      6E735F48 
+ 744      616E646C 
+ 744      6500
+ 745              	.LASF15:
+ 746 00bd 666C6F61 		.ascii	"float\000"
+ 746      7400
+ 747              	.LASF25:
+ 748 00c3 67646972 		.ascii	"gdir\000"
+ 748      00
+ 749              	.LASF1:
+ 750 00c8 756E7369 		.ascii	"unsigned char\000"
+ 750      676E6564 
+ 750      20636861 
+ 750      7200
+ 751              	.LASF8:
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 16
+
+
+ 752 00d6 6C6F6E67 		.ascii	"long unsigned int\000"
+ 752      20756E73 
+ 752      69676E65 
+ 752      6420696E 
+ 752      7400
+ 753              	.LASF20:
+ 754 00e8 7069766F 		.ascii	"pivot_steer\000"
+ 754      745F7374 
+ 754      65657200 
+ 755              	.LASF5:
+ 756 00f4 73686F72 		.ascii	"short unsigned int\000"
+ 756      7420756E 
+ 756      7369676E 
+ 756      65642069 
+ 756      6E7400
+ 757              	.LASF21:
+ 758 0107 6272616B 		.ascii	"brake_quick\000"
+ 758      655F7175 
+ 758      69636B00 
+ 759              	.LASF29:
+ 760 0113 44697265 		.ascii	"Directions_Init\000"
+ 760      6374696F 
+ 760      6E735F49 
+ 760      6E697400 
+ 761              	.LASF32:
+ 762 0123 49544D5F 		.ascii	"ITM_RxBuffer\000"
+ 762      52784275 
+ 762      66666572 
+ 762      00
+ 763              	.LASF27:
+ 764 0130 64697265 		.ascii	"directions.c\000"
+ 764      6374696F 
+ 764      6E732E63 
+ 764      00
+ 765              	.LASF4:
+ 766 013d 5F5F7569 		.ascii	"__uint16_t\000"
+ 766      6E743136 
+ 766      5F7400
+ 767              	.LASF16:
+ 768 0148 646F7562 		.ascii	"double\000"
+ 768      6C6500
+ 769              	.LASF11:
+ 770 014f 756E7369 		.ascii	"unsigned int\000"
+ 770      676E6564 
+ 770      20696E74 
+ 770      00
+ 771              	.LASF10:
+ 772 015c 6C6F6E67 		.ascii	"long long unsigned int\000"
+ 772      206C6F6E 
+ 772      6720756E 
+ 772      7369676E 
+ 772      65642069 
+ 773              	.LASF12:
+ 774 0173 75696E74 		.ascii	"uint8_t\000"
+ 774      385F7400 
+ 775              	.LASF14:
+ 776 017b 696E7433 		.ascii	"int32_t\000"
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 17
+
+
+ 776      325F7400 
+ 777              	.LASF19:
+ 778 0183 73697A65 		.ascii	"sizetype\000"
+ 778      74797065 
+ 778      00
+ 779              	.LASF9:
+ 780 018c 6C6F6E67 		.ascii	"long long int\000"
+ 780      206C6F6E 
+ 780      6720696E 
+ 780      7400
+ 781              	.LASF23:
+ 782 019a 62617365 		.ascii	"base_pc\000"
+ 782      5F706300 
+ 783              	.LASF17:
+ 784 01a2 63686172 		.ascii	"char\000"
+ 784      00
+ 785              	.LASF22:
+ 786 01a7 73746565 		.ascii	"steer_pc\000"
+ 786      725F7063 
+ 786      00
+ 787              	.LASF28:
+ 788 01b0 433A5C55 		.ascii	"C:\\Users\\ylee818\\Documents\\GitHub\\COMPSYS301\\"
+ 788      73657273 
+ 788      5C796C65 
+ 788      65383138 
+ 788      5C446F63 
+ 789 01dd 42656E63 		.ascii	"Benchmarktest___combined\\Benchmarktest___combined\\"
+ 789      686D6172 
+ 789      6B746573 
+ 789      745F5F5F 
+ 789      636F6D62 
+ 790 020f 70736F63 		.ascii	"psoc student pack\\psoc_code_base\\CS301_Class.cyds"
+ 790      20737475 
+ 790      64656E74 
+ 790      20706163 
+ 790      6B5C7073 
+ 791 0240 6E00     		.ascii	"n\000"
+ 792              	.LASF2:
+ 793 0242 73686F72 		.ascii	"short int\000"
+ 793      7420696E 
+ 793      7400
+ 794              	.LASF13:
+ 795 024c 75696E74 		.ascii	"uint16_t\000"
+ 795      31365F74 
+ 795      00
+ 796              	.LASF30:
+ 797 0255 44697265 		.ascii	"Directions_IsBusy\000"
+ 797      6374696F 
+ 797      6E735F49 
+ 797      73427573 
+ 797      7900
+ 798              	.LASF18:
+ 799 0267 6C6F6E67 		.ascii	"long double\000"
+ 799      20646F75 
+ 799      626C6500 
+ 800              	.LASF0:
+ 801 0273 7369676E 		.ascii	"signed char\000"
+ARM GAS  C:\Users\ylee818\AppData\Local\Temp\ccD1LAtj.s 			page 18
+
+
+ 801      65642063 
+ 801      68617200 
+ 802              	.LASF24:
+ 803 027f 5F426F6F 		.ascii	"_Bool\000"
+ 803      6C00
+ 804              		.ident	"GCC: (GNU Tools for ARM Embedded Processors) 5.4.1 20160609 (release) [ARM/embedded-5-bran
