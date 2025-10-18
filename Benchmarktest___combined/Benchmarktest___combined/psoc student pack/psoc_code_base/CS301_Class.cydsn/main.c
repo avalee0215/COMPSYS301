@@ -20,7 +20,7 @@
 #define VMAX_CONST_MM_S        800
 #define SPEED_FRAC_PERCENT      25
 #define V_CRUISE_MM_S  ((int32_t)VMAX_CONST_MM_S * (int32_t)SPEED_FRAC_PERCENT / 100)
-#define TARGET_DIST_MM        1100
+#define TARGET_DIST_MM        20000
 
 /* ===== Encoder → mm conversion (kept from your code) ===== */
 #define QD_SAMPLE_MS             5u
